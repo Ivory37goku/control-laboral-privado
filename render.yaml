@@ -23,18 +23,5 @@ services:
       name: datos-laborales
       mountPath: /var/data
       sizeGB: 1
-  - type: cron
-    name: control-laboral-auto-fichaje
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python auto_clock.py
-    # Render schedules use UTC. These two runs let the script hit 16:00 in the Canary Islands year-round.
-    schedule: "0 15,16 * * 1-5"
-    envVars:
-      - key: DATABASE_URL
-        fromService:
-          name: control-laboral-privado
-          type: web
-          envVarKey: DATABASE_URL
 
 
