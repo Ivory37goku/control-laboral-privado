@@ -1,0 +1,40 @@
+name: Verify app
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  syntax-and-sqlite-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check Python syntax
+        run: python -m py_compile app.py
+      - name: Smoke test SQLite backend
+        env:
+          DATABASE_PATH: /tmp/control-laboral-test.db
+          BACKUP_DIR: /tmp/control-laboral-backups
+          APP_PASSWORD: test-password
+          SECRET_KEY: test-secret-key
+        run: |
+          python - <<'PY'
+          import app as module
+          client = module.app.test_client()
+          response = client.post("/login", data={"password": "test-password"}, follow_redirects=True)
+          assert response.status_code == 200, response.status_code
+          response = client.get("/")
+          assert response.status_code == 200, response.status_code
+          with module.db() as con:
+              hours = con.execute("SELECT COALESCE(SUM(horas_extra), 0) AS n FROM jornadas").fetchone()["n"]
+              trips = con.execute("SELECT COALESCE(SUM(importe), 0) AS n FROM viajes WHERE pagado=0").fetchone()["n"]
+          assert float(hours) == 39.5, hours
+          assert float(trips) == 400.0, trips
+          print("SQLite smoke test OK: 39.5 overtime hours, 400 EUR pending.")
+          PY
