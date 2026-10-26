@@ -1,6 +1,7 @@
 """Create the usual weekday shift automatically at 16:00 Canary Islands time."""
 
 from datetime import datetime
+import os
 from zoneinfo import ZoneInfo
 
 from app import db
@@ -10,6 +11,10 @@ CANARY_TZ = ZoneInfo("Atlantic/Canary")
 
 
 def record_scheduled_shift(now=None):
+    if os.environ.get("IS_PULL_REQUEST", "false").lower() == "true":
+        print("No se crea fichaje: ejecución en una vista previa.")
+        return False
+
     now = now or datetime.now(CANARY_TZ)
     if now.tzinfo is None:
         now = now.replace(tzinfo=CANARY_TZ)
