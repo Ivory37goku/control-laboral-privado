@@ -30,6 +30,7 @@ class PostgresCompat:
     def __exit__(self, exc_type, exc, tb): return self.connection.__exit__(exc_type, exc, tb)
     def execute(self, sql, params=()):
         sql = sql.replace("?", "%s")
+        sql = sql.replace("ROUND(SUM(horas_extra),2)", "ROUND(SUM(horas_extra)::numeric,2)")
         sql = sql.replace("INSERT OR IGNORE INTO ajustes", "INSERT INTO ajustes")
         if sql.lstrip().upper().startswith("INSERT INTO AJUSTES") and "ON CONFLICT" not in sql.upper():
             sql = sql.rstrip().rstrip(";") + " ON CONFLICT (clave) DO NOTHING"
