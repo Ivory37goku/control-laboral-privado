@@ -114,6 +114,9 @@ def main():
         sys.exit("ERROR: la copia no contiene registros; no se ha importado nada.")
 
     with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10) as dest:
+        # Create missing tables before inspecting the destination. CREATE IF NOT EXISTS
+        # leaves an already-populated Neon database unchanged.
+        ensure_schema(dest)
         if not is_known_demo_destination(dest):
             sys.exit(
                 "ERROR: Neon no está vacío o contiene datos que no son la semilla conocida. "
