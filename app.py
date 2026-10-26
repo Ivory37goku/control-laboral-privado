@@ -11,6 +11,7 @@ from datetime import date, datetime
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
 from werkzeug.security import check_password_hash, generate_password_hash
+from auto_clock import record_scheduled_shift
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +46,12 @@ def protect_state_changes():
         supplied = request.form.get("_csrf_token", "") or request.headers.get("X-CSRF-Token", "")
         if not expected or not supplied or not secrets.compare_digest(expected, supplied):
             abort(400, description="Token de formulario inválido. Recarga la página e inténtalo de nuevo.")
+
+
+@app.before_request
+def record_usual_shift_after_work():
+    if session.get("logged_in") and request.method == "GET" and request.endpoint != "static":
+        record_scheduled_shift(db)
 
 
 class PostgresCompat:
@@ -731,4 +738,5 @@ with app.app_context():
 if __name__ == "__main__":
     # Solo para pruebas locales. Para usar desde fuera, despliega detrás de HTTPS.
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=False)
+
 
