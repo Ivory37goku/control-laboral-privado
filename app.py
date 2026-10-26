@@ -3,6 +3,9 @@ import sqlite3
 import csv
 import io
 import json
+import math
+import secrets
+import tempfile
 from datetime import date, datetime
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
@@ -18,8 +21,33 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(APP_DIR, "mi_trabajo.db"))
 BACKUP_DIR = os.environ.get("BACKUP_DIR", os.path.join(APP_DIR, "copias_seguridad"))
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "cambia-esta-clave-antes-de-publicar")
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
+
+
+def csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": csrf_token}
+
+
+@app.before_request
+def protect_state_changes():
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        expected = session.get("_csrf_token", "")
+        supplied = request.form.get("_csrf_token", "") or request.headers.get("X-CSRF-Token", "")
+        if not expected or not supplied or not secrets.compare_digest(expected, supplied):
+            abort(400, description="Token de formulario inválido. Recarga la página e inténtalo de nuevo.")
 
 
 class PostgresCompat:
@@ -40,6 +68,20 @@ class PostgresCompat:
             if statement.strip(): self.execute(statement)
         return self
 
+
+class SQLiteCompat:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        return self.connection
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self.connection.__exit__(exc_type, exc, tb)
+        finally:
+            self.connection.close()
+
 def db():
     if DATABASE_URL:
         import psycopg
@@ -48,7 +90,7 @@ def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
-    return con
+    return SQLiteCompat(con)
 
 
 def init_db():
@@ -140,6 +182,17 @@ def money(n):
     return f"{n:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def parse_nonnegative_number(value, default=None):
+    number = float(value if value not in (None, "") else default)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("Expected a finite non-negative number")
+    return number
+
+
+def parse_form_date(value):
+    return date.fromisoformat(value)
+
+
 @app.template_filter("money")
 def money_filter(n):
     return money(float(n or 0))
@@ -175,7 +228,7 @@ def login():
     return render_template("login.html")
 
 
-@app.route("/logout")
+@app.post("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
@@ -213,9 +266,9 @@ def jornadas():
     if request.method == "POST":
         fecha = request.form.get("fecha", "")
         try:
-            date.fromisoformat(fecha)
-            normales = max(0, float(request.form.get("horas_normales") or 0))
-            extra = max(0, float(request.form.get("horas_extra") or 0))
+            parse_form_date(fecha)
+            normales = parse_nonnegative_number(request.form.get("horas_normales"), 0)
+            extra = parse_nonnegative_number(request.form.get("horas_extra"), 0)
         except (ValueError, TypeError):
             flash("Revisa la fecha y las horas introducidas.", "danger")
             return redirect(url_for("jornadas"))
@@ -229,7 +282,35 @@ def jornadas():
     with db() as con:
         rows = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
     return render_template("jornadas.html", rows=rows, today=date.today().isoformat(),
-        normal_default=get_setting("horas_normales_dia", "8"))
+        normal_default=get_setting("horas_normales_dia", "8"), editing=None)
+
+
+@app.route("/jornadas/<int:item_id>/editar", methods=["GET", "POST"])
+@login_required
+def edit_jornada(item_id):
+    if request.method == "POST":
+        fecha = request.form.get("fecha", "")
+        try:
+            parse_form_date(fecha)
+            normales = parse_nonnegative_number(request.form.get("horas_normales"), 0)
+            extra = parse_nonnegative_number(request.form.get("horas_extra"), 0)
+        except (ValueError, TypeError):
+            flash("Revisa la fecha y las horas introducidas.", "danger")
+            return redirect(url_for("edit_jornada", item_id=item_id))
+        with db() as con:
+            con.execute("""UPDATE jornadas SET fecha=?,entrada=?,salida=?,horas_normales=?,horas_extra=?,notas=?
+                WHERE id=?""", (fecha, request.form.get("entrada", "").strip(),
+                request.form.get("salida", "").strip(), normales, extra,
+                request.form.get("notas", "").strip(), item_id))
+        flash("Jornada actualizada.", "success")
+        return redirect(url_for("jornadas"))
+    with db() as con:
+        editing = con.execute("SELECT * FROM jornadas WHERE id=?", (item_id,)).fetchone()
+        rows = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
+    if not editing:
+        abort(404)
+    return render_template("jornadas.html", rows=rows, today=date.today().isoformat(),
+        normal_default=get_setting("horas_normales_dia", "8"), editing=editing)
 
 
 @app.post("/jornadas/<int:item_id>/delete")
@@ -246,21 +327,53 @@ def delete_jornada(item_id):
 def viajes():
     if request.method == "POST":
         fecha = request.form.get("fecha", "")
+        concepto = request.form.get("concepto", "").strip()
         try:
-            date.fromisoformat(fecha)
-            importe = max(0, float(request.form.get("importe", "200").replace(",", ".")))
+            parse_form_date(fecha)
+            importe = parse_nonnegative_number(request.form.get("importe", "200").replace(",", "."))
         except (ValueError, TypeError):
             flash("Revisa la fecha y el importe.", "danger")
             return redirect(url_for("viajes"))
+        if not concepto:
+            flash("El concepto del viaje es obligatorio.", "danger")
+            return redirect(url_for("viajes"))
         with db() as con:
             con.execute("""INSERT INTO viajes(fecha,concepto,importe,pagado,notas,creado)
-                VALUES(?,?,?,?,?,?)""", (fecha, request.form.get("concepto","Viaje de trabajo").strip() or "Viaje de trabajo",
+                VALUES(?,?,?,?,?,?)""", (fecha, concepto,
                 importe, 0, request.form.get("notas","").strip(), datetime.now().isoformat()))
         flash("Viaje añadido como pendiente de pago.", "success")
         return redirect(url_for("viajes"))
     with db() as con:
         rows = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC").fetchall()
-    return render_template("viajes.html", rows=rows, today=date.today().isoformat())
+    return render_template("viajes.html", rows=rows, today=date.today().isoformat(), editing=None)
+
+
+@app.route("/viajes/<int:item_id>/editar", methods=["GET", "POST"])
+@login_required
+def edit_viaje(item_id):
+    if request.method == "POST":
+        fecha = request.form.get("fecha", "")
+        concepto = request.form.get("concepto", "").strip()
+        try:
+            parse_form_date(fecha)
+            importe = parse_nonnegative_number(request.form.get("importe", "").replace(",", "."))
+        except (ValueError, TypeError):
+            flash("Revisa la fecha y el importe.", "danger")
+            return redirect(url_for("edit_viaje", item_id=item_id))
+        if not concepto:
+            flash("El concepto del viaje es obligatorio.", "danger")
+            return redirect(url_for("edit_viaje", item_id=item_id))
+        with db() as con:
+            con.execute("UPDATE viajes SET fecha=?,concepto=?,importe=?,notas=? WHERE id=?",
+                (fecha, concepto, importe, request.form.get("notas", "").strip(), item_id))
+        flash("Viaje actualizado.", "success")
+        return redirect(url_for("viajes"))
+    with db() as con:
+        editing = con.execute("SELECT * FROM viajes WHERE id=?", (item_id,)).fetchone()
+        rows = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC").fetchall()
+    if not editing:
+        abort(404)
+    return render_template("viajes.html", rows=rows, today=date.today().isoformat(), editing=editing)
 
 
 @app.post("/viajes/<int:item_id>/toggle")
@@ -289,23 +402,57 @@ def delete_viaje(item_id):
 @login_required
 def pagos():
     if request.method == "POST":
+        concepto = request.form.get("concepto", "").strip()
+        categoria = request.form.get("categoria", "otro")
         try:
             fecha = request.form.get("fecha", "")
-            date.fromisoformat(fecha)
-            importe = max(0, float(request.form.get("importe", "0").replace(",", ".")))
+            parse_form_date(fecha)
+            importe = parse_nonnegative_number(request.form.get("importe", "0").replace(",", "."))
         except (ValueError, TypeError):
             flash("Revisa la fecha y el importe.", "danger")
             return redirect(url_for("pagos"))
+        if not concepto or categoria not in {"horas_extra", "viaje", "otro"}:
+            flash("Revisa el concepto y la categoría del pago.", "danger")
+            return redirect(url_for("pagos"))
         with db() as con:
             con.execute("""INSERT INTO pagos(fecha,concepto,importe,categoria,notas,creado)
-                VALUES(?,?,?,?,?,?)""", (fecha, request.form.get("concepto","Pago").strip() or "Pago",
-                importe, request.form.get("categoria","otro"), request.form.get("notas","").strip(),
+                VALUES(?,?,?,?,?,?)""", (fecha, concepto,
+                importe, categoria, request.form.get("notas","").strip(),
                 datetime.now().isoformat()))
         flash("Pago registrado en el histórico.", "success")
         return redirect(url_for("pagos"))
     with db() as con:
         rows = con.execute("SELECT * FROM pagos ORDER BY fecha DESC,id DESC").fetchall()
-    return render_template("pagos.html", rows=rows, today=date.today().isoformat())
+    return render_template("pagos.html", rows=rows, today=date.today().isoformat(), editing=None)
+
+
+@app.route("/pagos/<int:item_id>/editar", methods=["GET", "POST"])
+@login_required
+def edit_pago(item_id):
+    if request.method == "POST":
+        fecha = request.form.get("fecha", "")
+        concepto = request.form.get("concepto", "").strip()
+        categoria = request.form.get("categoria", "otro")
+        try:
+            parse_form_date(fecha)
+            importe = parse_nonnegative_number(request.form.get("importe", "").replace(",", "."))
+        except (ValueError, TypeError):
+            flash("Revisa la fecha y el importe.", "danger")
+            return redirect(url_for("edit_pago", item_id=item_id))
+        if not concepto or categoria not in {"horas_extra", "viaje", "otro"}:
+            flash("Revisa el concepto y la categoría del pago.", "danger")
+            return redirect(url_for("edit_pago", item_id=item_id))
+        with db() as con:
+            con.execute("UPDATE pagos SET fecha=?,concepto=?,importe=?,categoria=?,notas=? WHERE id=?",
+                (fecha, concepto, importe, categoria, request.form.get("notas", "").strip(), item_id))
+        flash("Pago actualizado.", "success")
+        return redirect(url_for("pagos"))
+    with db() as con:
+        editing = con.execute("SELECT * FROM pagos WHERE id=?", (item_id,)).fetchone()
+        rows = con.execute("SELECT * FROM pagos ORDER BY fecha DESC,id DESC").fetchall()
+    if not editing:
+        abort(404)
+    return render_template("pagos.html", rows=rows, today=date.today().isoformat(), editing=editing)
 
 
 @app.route("/ajustes", methods=["GET", "POST"])
@@ -315,7 +462,7 @@ def ajustes():
         rate = request.form.get("hora_extra_euros", "").strip().replace(",", ".")
         if rate:
             try:
-                if float(rate) < 0: raise ValueError
+                if not math.isfinite(float(rate)) or float(rate) < 0: raise ValueError
             except ValueError:
                 flash("La tarifa debe ser un número válido no negativo.", "danger")
                 return redirect(url_for("ajustes"))
@@ -350,10 +497,19 @@ def asistente():
             with db() as con:
                 hrs = con.execute("SELECT fecha,horas_extra,notas FROM jornadas ORDER BY fecha DESC LIMIT 80").fetchall()
                 trs = con.execute("SELECT fecha,concepto,importe,pagado,notas FROM viajes ORDER BY fecha DESC LIMIT 40").fetchall()
+                payments = con.execute("SELECT fecha,concepto,importe,categoria,notas FROM pagos ORDER BY fecha DESC LIMIT 40").fetchall()
+                totals = con.execute("""SELECT
+                    (SELECT COALESCE(SUM(horas_extra),0) FROM jornadas) horas_extra,
+                    (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=0) viajes_pendientes_eur,
+                    (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=1) viajes_pagados_eur,
+                    (SELECT COALESCE(SUM(importe),0) FROM pagos) pagos_registrados_eur
+                """).fetchone()
                 settings = con.execute("SELECT clave,valor FROM ajustes").fetchall()
             context = {
                 "jornadas_recientes": [dict(x) for x in hrs],
                 "viajes": [dict(x) for x in trs],
+                "pagos_registrados": [dict(x) for x in payments],
+                "totales": dict(totals),
                 "ajustes": {x["clave"]: x["valor"] for x in settings}
             }
             try:
@@ -367,8 +523,9 @@ def asistente():
                     input=f"Datos actuales en JSON:\n{context}\n\nPetición del usuario:\n{prompt}"
                 )
                 respuesta = response.output_text
-            except Exception as e:
-                respuesta = "No se pudo contactar con el servicio de IA. Revisa la clave y la configuración del servidor. Detalle: " + str(e)[:300]
+            except Exception:
+                app.logger.exception("AI assistant request failed")
+                respuesta = "No se pudo contactar con el servicio de IA. Revisa la clave y la configuración del servidor."
     return render_template("asistente.html", respuesta=respuesta, prompt=prompt)
 
 
@@ -398,23 +555,121 @@ def exportar():
 def backup():
     os.makedirs(BACKUP_DIR, exist_ok=True)
     if request.method == "POST":
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if DATABASE_URL:
-            dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{stamp}.json")
-            snapshot = {}
-            with db() as source:
-                for table in ("jornadas", "viajes", "pagos", "ajustes", "notas"):
-                    snapshot[table] = [dict(row) for row in source.execute(f"SELECT * FROM {table}").fetchall()]
-            with open(dest, "w", encoding="utf-8") as output:
-                json.dump(snapshot, output, ensure_ascii=False, indent=2, default=str)
-        else:
-            dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{stamp}.db")
-            with db() as source, sqlite3.connect(dest) as target:
-                source.backup(target)
-        flash(f"Copia creada: {os.path.basename(dest)}", "success")
+        try:
+            dest = create_backup_snapshot()
+            flash(f"Copia creada y comprobada: {os.path.basename(dest)}", "success")
+        except Exception:
+            app.logger.exception("Backup creation failed")
+            flash("No se pudo crear o comprobar la copia. Revisa el espacio disponible.", "danger")
         return redirect(url_for("backup"))
     files = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith((".db", ".json"))], reverse=True)
     return render_template("backup.html", files=files)
+
+
+BACKUP_TABLES = ("jornadas", "viajes", "pagos", "ajustes", "notas")
+BACKUP_COLUMNS = {
+    "jornadas": {"id", "fecha", "entrada", "salida", "horas_normales", "horas_extra", "notas", "creado"},
+    "viajes": {"id", "fecha", "concepto", "importe", "pagado", "fecha_pago", "notas", "creado"},
+    "pagos": {"id", "fecha", "concepto", "importe", "categoria", "notas", "creado"},
+    "ajustes": {"clave", "valor"},
+    "notas": {"id", "fecha", "titulo", "contenido", "creado"},
+}
+
+
+def create_backup_snapshot():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    if DATABASE_URL:
+        dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{stamp}.json")
+        snapshot = {}
+        with db() as source:
+            for table in BACKUP_TABLES:
+                snapshot[table] = [dict(row) for row in source.execute(f"SELECT * FROM {table}").fetchall()]
+        with open(dest, "w", encoding="utf-8") as output:
+            json.dump(snapshot, output, ensure_ascii=False, indent=2, default=str)
+    else:
+        dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{stamp}.db")
+        with db() as source, SQLiteCompat(sqlite3.connect(dest)) as target:
+            source.backup(target)
+    if not validate_backup_file(dest):
+        os.remove(dest)
+        raise ValueError("Backup validation failed")
+    return dest
+
+
+def validate_backup_file(path):
+    try:
+        if path.endswith(".json"):
+            with open(path, encoding="utf-8") as source:
+                data = json.load(source)
+            return all(
+                isinstance(data.get(table), list)
+                and all(isinstance(row, dict) and set(row).issubset(BACKUP_COLUMNS[table]) for row in data[table])
+                for table in BACKUP_TABLES
+            )
+        if path.endswith(".db"):
+            with SQLiteCompat(sqlite3.connect(f"file:{os.path.abspath(path)}?mode=ro", uri=True)) as con:
+                integrity = con.execute("PRAGMA quick_check").fetchone()[0]
+                tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            return integrity == "ok" and {"jornadas", "viajes", "pagos", "ajustes", "notas"}.issubset(tables)
+    except (OSError, ValueError, sqlite3.Error, TypeError):
+        app.logger.exception("Backup validation failed")
+    return False
+
+
+def restore_postgres_snapshot(snapshot):
+    with db() as con:
+        for table in reversed(BACKUP_TABLES):
+            con.execute(f"DELETE FROM {table}")
+        for table in BACKUP_TABLES:
+            for row in snapshot[table]:
+                columns = sorted(row)
+                if not columns:
+                    continue
+                names = ",".join(columns)
+                placeholders = ",".join("?" for _ in columns)
+                con.execute(f"INSERT INTO {table} ({names}) VALUES ({placeholders})",
+                    tuple(row[column] for column in columns))
+        for table in ("jornadas", "viajes", "pagos", "notas"):
+            con.execute(f"""SELECT setval(pg_get_serial_sequence('{table}','id'),
+                COALESCE((SELECT MAX(id) FROM {table}),1), EXISTS(SELECT 1 FROM {table}))""")
+
+
+@app.post("/backup/restaurar")
+@login_required
+def restore_backup():
+    uploaded = request.files.get("backup_file")
+    if not uploaded or not uploaded.filename or request.form.get("confirm_restore") != "yes":
+        flash("Selecciona una copia y confirma que quieres restaurarla.", "danger")
+        return redirect(url_for("backup"))
+    extension = ".json" if DATABASE_URL else ".db"
+    if os.path.splitext(uploaded.filename)[1].lower() != extension:
+        flash(f"Esta instalación solo puede restaurar copias {extension}.", "danger")
+        return redirect(url_for("backup"))
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    staged_path = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="restaurar_", suffix=extension, dir=BACKUP_DIR, delete=False) as staged:
+            staged_path = staged.name
+        uploaded.save(staged_path)
+        if not validate_backup_file(staged_path):
+            flash("La copia no superó la comprobación; no se modificaron los datos.", "danger")
+            return redirect(url_for("backup"))
+        safety_copy = create_backup_snapshot()
+        if DATABASE_URL:
+            with open(staged_path, encoding="utf-8") as source:
+                restore_postgres_snapshot(json.load(source))
+        else:
+            os.replace(staged_path, DB_PATH)
+            staged_path = None
+        flash(f"Copia restaurada. Se guardó una copia de seguridad previa: {os.path.basename(safety_copy)}", "success")
+    except Exception:
+        app.logger.exception("Backup restore failed")
+        flash("No se pudo restaurar la copia. Se conservaron los datos actuales.", "danger")
+    finally:
+        if staged_path and os.path.exists(staged_path):
+            os.remove(staged_path)
+    return redirect(url_for("backup"))
 
 
 @app.route("/backup/<path:filename>")
@@ -425,6 +680,8 @@ def download_backup(filename):
     path = os.path.join(BACKUP_DIR, filename)
     if not os.path.isfile(path):
         abort(404)
+    if not validate_backup_file(path):
+        abort(400, description="La copia no supera la comprobación de integridad.")
     return send_file(path, as_attachment=True, download_name=filename)
 
 
@@ -435,3 +692,4 @@ with app.app_context():
 if __name__ == "__main__":
     # Solo para pruebas locales. Para usar desde fuera, despliega detrás de HTTPS.
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=False)
+
