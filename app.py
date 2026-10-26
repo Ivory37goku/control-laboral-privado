@@ -6,15 +6,12 @@ import json
 import math
 import secrets
 import tempfile
+import unicodedata
 from datetime import date, datetime
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
 from werkzeug.security import check_password_hash, generate_password_hash
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -477,6 +474,67 @@ def ajustes():
         days=get_setting("dias_trabajo","Lunes a viernes"))
 
 
+def assistant_local_response(prompt, monthly_hours, totals, hourly_rate):
+    question = unicodedata.normalize("NFKD", prompt.casefold())
+    question = "".join(char for char in question if not unicodedata.combining(char))
+
+    overtime_hours = float(totals["horas_extra"] or 0)
+    pending_trips = float(totals["viajes_pendientes_eur"] or 0)
+    paid_trips = float(totals["viajes_pagados_eur"] or 0)
+    recorded_payments = float(totals["pagos_registrados_eur"] or 0)
+    estimated_overtime = overtime_hours * hourly_rate if hourly_rate is not None else None
+
+    if any(term in question for term in ("viaje", "desplazamiento")):
+        pending_count = int(totals["viajes_pendientes_count"] or 0)
+        paid_count = int(totals["viajes_pagados_count"] or 0)
+        return (
+            f"Viajes registrados: {pending_count} pendientes por {money(pending_trips)} "
+            f"y {paid_count} pagados por {money(paid_trips)}."
+        )
+
+    if any(term in question for term in ("hora", "jornada", "extra")):
+        lines = ["Horas extra registradas por mes:"]
+        if monthly_hours:
+            for row in monthly_hours:
+                month = row["mes"]
+                month_hours = f"{float(row['horas'] or 0):.2f}".replace(".", ",")
+                lines.append(f"- {month[5:7]}/{month[:4]}: {month_hours} h")
+        else:
+            lines.append("- No hay horas extra registradas.")
+        total_hours_text = f"{overtime_hours:.2f}".replace(".", ",")
+        lines.append(f"Total acumulado: {total_hours_text} h.")
+        if estimated_overtime is None:
+            lines.append("No hay una tarifa por hora configurada para estimar el importe.")
+        else:
+            lines.append(f"Importe estimado a {money(hourly_rate)}/h: {money(estimated_overtime)}.")
+        lines.append("El cálculo usa los registros guardados; revisa los apuntes que sean provisionales.")
+        return "\n".join(lines)
+
+    if any(term in question for term in ("pago", "cobrado", "recibido")):
+        total_received = paid_trips + recorded_payments
+        return (
+            f"Pagos anotados en el histórico: {money(recorded_payments)}. "
+            f"Viajes marcados como pagados: {money(paid_trips)}. "
+            f"Total recibido registrado entre ambos: {money(total_received)}."
+        )
+
+    lines = [
+        "Resumen de tus datos guardados:",
+        f"- Horas extra: {overtime_hours:.2f}".replace(".", ",") + " h.",
+    ]
+    if estimated_overtime is None:
+        lines.append("- Importe de horas extra: configura la tarifa en Ajustes para calcularlo.")
+    else:
+        lines.append(f"- Importe estimado de horas extra: {money(estimated_overtime)}.")
+    lines.extend([
+        f"- Viajes pendientes: {money(pending_trips)}.",
+        f"- Viajes pagados: {money(paid_trips)}.",
+        f"- Pagos anotados en el histórico: {money(recorded_payments)}.",
+        "Las horas marcadas como provisionales deben comprobarse.",
+    ])
+    return "\n".join(lines)
+
+
 @app.route("/asistente", methods=["GET", "POST"])
 @login_required
 def asistente():
@@ -484,48 +542,29 @@ def asistente():
     prompt = ""
     if request.method == "POST":
         prompt = request.form.get("prompt", "").strip()
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not prompt:
-            respuesta = "Escribe qué quieres registrar o consultar."
-        elif not api_key:
-            respuesta = ("El asistente IA aún no está activado: falta OPENAI_API_KEY en el servidor. "
-                         "Tus registros y gráficos funcionan sin esa clave. No pongas la clave aquí en el chat; "
-                         "configúrala como variable de entorno en el servidor.")
-        elif OpenAI is None:
-            respuesta = "Falta instalar la dependencia openai. Ejecuta: pip install -r requirements.txt"
+            respuesta = "Escribe qué quieres consultar."
         else:
             with db() as con:
-                hrs = con.execute("SELECT fecha,horas_extra,notas FROM jornadas ORDER BY fecha DESC LIMIT 80").fetchall()
-                trs = con.execute("SELECT fecha,concepto,importe,pagado,notas FROM viajes ORDER BY fecha DESC LIMIT 40").fetchall()
-                payments = con.execute("SELECT fecha,concepto,importe,categoria,notas FROM pagos ORDER BY fecha DESC LIMIT 40").fetchall()
+                monthly_hours = con.execute("""SELECT substr(fecha,1,7) mes,
+                    ROUND(SUM(horas_extra),2) horas
+                    FROM jornadas GROUP BY substr(fecha,1,7) ORDER BY mes""").fetchall()
                 totals = con.execute("""SELECT
                     (SELECT COALESCE(SUM(horas_extra),0) FROM jornadas) horas_extra,
                     (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=0) viajes_pendientes_eur,
                     (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=1) viajes_pagados_eur,
-                    (SELECT COALESCE(SUM(importe),0) FROM pagos) pagos_registrados_eur
+                    (SELECT COALESCE(SUM(importe),0) FROM pagos) pagos_registrados_eur,
+                    (SELECT COUNT(*) FROM viajes WHERE pagado=0) viajes_pendientes_count,
+                    (SELECT COUNT(*) FROM viajes WHERE pagado=1) viajes_pagados_count
                 """).fetchone()
-                settings = con.execute("SELECT clave,valor FROM ajustes").fetchall()
-            context = {
-                "jornadas_recientes": [dict(x) for x in hrs],
-                "viajes": [dict(x) for x in trs],
-                "pagos_registrados": [dict(x) for x in payments],
-                "totales": dict(totals),
-                "ajustes": {x["clave"]: x["valor"] for x in settings}
-            }
+            rate = get_setting("hora_extra_euros", "").strip()
             try:
-                client = OpenAI(api_key=api_key)
-                response = client.responses.create(
-                    model=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
-                    instructions=("Eres un asistente para organizar horas de trabajo y cantidades pendientes. "
-                    "Responde en español claro. Usa solo los datos incluidos. No afirmes haber guardado o cambiado "
-                    "registros: en esta versión solo puedes analizar y aconsejar, no escribir en la base de datos. "
-                    "Distingue datos confirmados de provisionales. No des asesoramiento legal definitivo."),
-                    input=f"Datos actuales en JSON:\n{context}\n\nPetición del usuario:\n{prompt}"
-                )
-                respuesta = response.output_text
-            except Exception:
-                app.logger.exception("AI assistant request failed")
-                respuesta = "No se pudo contactar con el servicio de IA. Revisa la clave y la configuración del servidor."
+                hourly_rate = float(rate.replace(",", ".")) if rate else None
+                if hourly_rate is not None and (not math.isfinite(hourly_rate) or hourly_rate < 0):
+                    hourly_rate = None
+            except ValueError:
+                hourly_rate = None
+            respuesta = assistant_local_response(prompt, monthly_hours, totals, hourly_rate)
     return render_template("asistente.html", respuesta=respuesta, prompt=prompt)
 
 

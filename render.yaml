@@ -19,8 +19,6 @@ services:
         value: /var/data/mi_trabajo.db
       - key: BACKUP_DIR
         value: /var/data/copias_seguridad
-      - key: OPENAI_API_KEY
-        sync: false
     disk:
       name: datos-laborales
       mountPath: /var/data

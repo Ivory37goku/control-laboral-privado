@@ -1,4 +1,4 @@
-MI CONTROL LABORAL CON IA — WEB APP
+MI CONTROL LABORAL — WEB APP
 ====================================
 
 QUÉ ES
@@ -7,7 +7,7 @@ QUÉ ES
 - Registros de horas extra, viajes, pagos recibidos y copias de seguridad.
 - Edición de jornadas, viajes y pagos ya guardados.
 - Exportación CSV para abrir con Excel.
-- Asistente IA opcional mediante API key.
+- Asistente local gratuito que resume horas, viajes y pagos sin enviar datos fuera de la aplicación.
 - Protección CSRF en formularios y validación de integridad de las copias descargables.
 - Restauración de copias con validación y copia de seguridad previa automática.
 - Contraseña de acceso mediante variable de entorno.
@@ -47,7 +47,7 @@ accedan ambos dispositivos. Este ZIP incluye render.yaml preparado para Render c
 persistente. Pasos generales:
 1. Sube el contenido a un repositorio privado de GitHub.
 2. En Render crea un servicio nuevo desde ese repositorio y aplica render.yaml.
-3. Define APP_PASSWORD con una contraseña larga y OPENAI_API_KEY si quieres usar IA.
+3. Define APP_PASSWORD con una contraseña larga.
 4. Comprueba que el servicio usa disco persistente montado en /var/data.
 5. Abre la URL HTTPS del servicio en móvil y ordenador e inicia sesión con la misma contraseña.
 
@@ -56,15 +56,11 @@ preparado para desplegarse; compartir datos entre dispositivos solo funcionará 
 despliegue en un servidor persistente. No pongas el archivo de base de datos ni claves en
 un repositorio público. Protege la cuenta de hosting y crea copias periódicas.
 
-ACTIVAR IA
-- La app funciona sin IA.
-- Para habilitarla, configura OPENAI_API_KEY como variable de entorno secreta en el servidor.
-- Opcionalmente, configura OPENAI_MODEL (por defecto gpt-4.1-mini).
-- La clave de API no debe ponerse en el código ni enviarse por chat.
-- En esta primera versión la IA solo lee una selección de registros para responder; no puede
-  crear, editar ni borrar registros. Puede resumir jornadas, viajes, pagos y totales. Usa el
-  formulario normal para cambiar los datos.
-- El uso de API puede generar costes separados.
+ASISTENTE LOCAL GRATUITO
+- El asistente calcula resúmenes de jornadas, viajes y pagos a partir de los datos guardados.
+- No necesita API key, no tiene coste de uso y no envía registros a un proveedor externo.
+- Solo ofrece consultas y resúmenes; no puede crear, editar ni borrar registros.
+- Para modificar datos, usa los formularios normales de la aplicación.
 
 SEGURIDAD Y LIMITACIONES
 - Usa HTTPS al desplegar.
