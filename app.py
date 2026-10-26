@@ -501,7 +501,8 @@ def assistant_local_response(prompt, monthly_hours, totals, hourly_rate):
                 lines.append(f"- {month[5:7]}/{month[:4]}: {month_hours} h")
         else:
             lines.append("- No hay horas extra registradas.")
-        lines.append(f"Total acumulado: {overtime_hours:.2f} h.".replace(".", ","))
+        total_hours_text = f"{overtime_hours:.2f}".replace(".", ",")
+        lines.append(f"Total acumulado: {total_hours_text} h.")
         if estimated_overtime is None:
             lines.append("No hay una tarifa por hora configurada para estimar el importe.")
         else:
@@ -519,7 +520,7 @@ def assistant_local_response(prompt, monthly_hours, totals, hourly_rate):
 
     lines = [
         "Resumen de tus datos guardados:",
-        f"- Horas extra: {overtime_hours:.2f} h.".replace(".", ","),
+        f"- Horas extra: {overtime_hours:.2f}".replace(".", ",") + " h.",
     ]
     if estimated_overtime is None:
         lines.append("- Importe de horas extra: configura la tarifa en Ajustes para calcularlo.")
