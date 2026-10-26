@@ -11,6 +11,8 @@ services:
         generateValue: true
       - key: APP_PASSWORD
         sync: false
+      - key: DATABASE_URL
+        sync: false
       - key: DATABASE_PATH
         value: /var/data/mi_trabajo.db
       - key: BACKUP_DIR
