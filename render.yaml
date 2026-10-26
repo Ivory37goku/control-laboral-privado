@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: control-laboral-ia
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: DATABASE_PATH
+        value: /var/data/mi_trabajo.db
+      - key: BACKUP_DIR
+        value: /var/data/copias_seguridad
+      - key: OPENAI_API_KEY
+        sync: false
+    disk:
+      name: datos-laborales
+      mountPath: /var/data
+      sizeGB: 1

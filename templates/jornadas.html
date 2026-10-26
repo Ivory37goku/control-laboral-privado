@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}Horas · Mi Control Laboral{% endblock %}
+{% block content %}<div class="d-flex justify-content-between align-items-end flex-wrap gap-2 mb-4"><div><div class="muted small">REGISTRO</div><h1 class="h2 fw-bold mb-0">Jornadas y horas extra</h1></div><a class="btn btn-outline-success" href="{{ url_for('exportar',tabla='jornadas') }}">Exportar CSV</a></div>
+<div class="panel mb-4"><h2 class="h5 fw-bold mb-3">Añadir registro</h2><form method="post" class="row g-3">
+<div class="col-6 col-md-3"><label class="form-label">Fecha</label><input class="form-control" type="date" name="fecha" value="{{ today }}" required></div>
+<div class="col-6 col-md-3"><label class="form-label">Entrada (opcional)</label><input class="form-control" type="time" name="entrada"></div>
+<div class="col-6 col-md-3"><label class="form-label">Salida (opcional)</label><input class="form-control" type="time" name="salida"></div>
+<div class="col-6 col-md-3"><label class="form-label">Horas normales</label><input class="form-control" type="number" name="horas_normales" min="0" step=".25" value="{{ normal_default }}"></div>
+<div class="col-6 col-md-3"><label class="form-label">Horas extra</label><input class="form-control" type="number" name="horas_extra" min="0" step=".25" value="0" required></div>
+<div class="col-12 col-md-9"><label class="form-label">Notas</label><input class="form-control" name="notas" placeholder="Ej. total provisional, festivo, ajuste..."></div>
+<div class="col-12"><button class="btn btn-success">Guardar jornada</button></div></form></div>
+<section class="panel"><h2 class="h5 fw-bold mb-3">Historial</h2><div class="table-responsive"><table class="table"><thead><tr><th>Fecha</th><th>Horas normales</th><th>Horas extra</th><th>Notas</th><th></th></tr></thead><tbody>{% for r in rows %}<tr><td>{{ r.fecha|date_es }}</td><td>{{ '%.2f'|format(r.horas_normales) }}</td><td class="fw-semibold">{{ '%.2f'|format(r.horas_extra) }} h</td><td>{{ r.notas or '—' }}</td><td><form method="post" action="{{ url_for('delete_jornada',item_id=r.id) }}" onsubmit="return confirm('¿Eliminar este registro?')"><button class="btn btn-sm btn-outline-danger">Eliminar</button></form></td></tr>{% else %}<tr><td colspan="5" class="muted">Sin registros.</td></tr>{% endfor %}</tbody></table></div></section>{% endblock %}

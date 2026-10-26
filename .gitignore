@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+mi_trabajo.db
+copias_seguridad/
