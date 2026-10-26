@@ -192,7 +192,10 @@ def dashboard():
             FROM jornadas GROUP BY substr(fecha,1,7) ORDER BY mes""").fetchall()
         trips = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC LIMIT 6").fetchall()
         recent = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC LIMIT 6").fetchall()
-        payments = con.execute("SELECT COALESCE(SUM(importe),0) n FROM pagos").fetchone()["n"]
+        payments = con.execute("""SELECT
+            (SELECT COALESCE(SUM(importe),0) FROM pagos) +
+            (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=1) n
+        """).fetchone()["n"]
     rate = get_setting("hora_extra_euros", "").strip()
     try:
         rate_num = float(rate.replace(",", ".")) if rate else None
