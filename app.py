@@ -165,7 +165,11 @@ def login():
             session.clear()
             session["logged_in"] = True
             session.permanent = True
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            next_url = request.args.get("next", "")
+            # Solo permitir rutas locales para evitar redirecciones externas.
+            if next_url.startswith("/") and not next_url.startswith("//") and chr(92) not in next_url:
+                return redirect(next_url)
+            return redirect(url_for("dashboard"))
         else:
             flash("Contraseña incorrecta.", "danger")
     return render_template("login.html")
