@@ -5,8 +5,11 @@ QUÉ ES
 - Aplicación web adaptable a móvil y ordenador.
 - Dashboard con gráfico de horas extra, resumen de dinero y accesos rápidos.
 - Registros de horas extra, viajes, pagos recibidos y copias de seguridad.
+- Edición de jornadas, viajes y pagos ya guardados.
 - Exportación CSV para abrir con Excel.
 - Asistente IA opcional mediante API key.
+- Protección CSRF en formularios y validación de integridad de las copias descargables.
+- Restauración de copias con validación y copia de seguridad previa automática.
 - Contraseña de acceso mediante variable de entorno.
 
 DATOS PRECARGADOS
@@ -59,15 +62,19 @@ ACTIVAR IA
 - Opcionalmente, configura OPENAI_MODEL (por defecto gpt-4.1-mini).
 - La clave de API no debe ponerse en el código ni enviarse por chat.
 - En esta primera versión la IA solo lee una selección de registros para responder; no puede
-  crear, editar ni borrar registros. Usa el formulario normal para cambiar los datos.
+  crear, editar ni borrar registros. Puede resumir jornadas, viajes, pagos y totales. Usa el
+  formulario normal para cambiar los datos.
 - El uso de API puede generar costes separados.
 
 SEGURIDAD Y LIMITACIONES
 - Usa HTTPS al desplegar.
 - Cambia SECRET_KEY y configura APP_PASSWORD.
+- En Render se activa la cookie de sesión segura; en uso local HTTP no se fuerza para que
+  puedas iniciar sesión en localhost.
 - El acceso actual es una contraseña compartida; no es un sistema multiusuario con cuentas
   independientes.
 - SQLite está en el disco persistente del servidor; no es una sincronización entre dos copias.
 - No se conecta automáticamente a Sesame. Importar datos requiere exportación o integración
   autorizada disponible por parte de tu empresa.
 - La app es un registro personal, no determina por sí sola el cálculo legal de nóminas.
+
