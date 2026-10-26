@@ -10,7 +10,7 @@ QUÉ ES
 - Asistente local gratuito que resume horas, viajes y pagos sin enviar datos fuera de la aplicación.
 - Protección CSRF en formularios y validación de integridad de las copias descargables.
 - Restauración de copias con validación y copia de seguridad previa automática.
-- Fichaje automático de lunes a viernes a las 16:00, con horario 08:00–16:00 y sin horas extra. Evita duplicados y deja nota para identificar los registros automáticos.
+- Fichaje automático gratuito al abrir la app después de las 16:00, de lunes a viernes. Registra 08:00–16:00 sin horas extra, evita duplicados y marca las entradas como automáticas.
 - Contraseña de acceso mediante variable de entorno.
 
 DATOS PRECARGADOS
@@ -64,10 +64,10 @@ ASISTENTE LOCAL GRATUITO
 - Para modificar datos, usa los formularios normales de la aplicación.
 
 FICHAJE AUTOMÁTICO
-- En Render, un trabajo programado ejecuta el fichaje de lunes a viernes a las 16:00, hora de Canarias.
+- Al abrir una página de la app con la sesión iniciada después de las 16:00, hora de Canarias, se crea el fichaje de ese día si es laborable.
 - Guarda entrada 08:00, salida 16:00, 8 horas normales y 0 extra. Si ya existe un fichaje para esa fecha, no crea otro ni lo modifica.
 - Cada registro incluye una nota indicando que se creó automáticamente y que no se verificó manualmente. Corrígelo si hubo ausencia o el horario real fue distinto.
-- El trabajo de Render tiene un coste mínimo de 1 USD al mes; el plan gratuito de servicios web no incluye trabajos cron.
+- No requiere servicio programado ni clave adicional. Si no abres la app después de las 16:00 ese día, el fichaje no se crea.
 
 SEGURIDAD Y LIMITACIONES
 - Usa HTTPS al desplegar.
