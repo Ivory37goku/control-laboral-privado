@@ -34,6 +34,20 @@ def pg_rows(conn, table):
         return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+def ensure_schema(conn):
+    """Create app-compatible tables if Neon has never been initialized."""
+    statements = [
+        "CREATE TABLE IF NOT EXISTS jornadas (id BIGSERIAL PRIMARY KEY, fecha TEXT NOT NULL, entrada TEXT DEFAULT '', salida TEXT DEFAULT '', horas_normales DOUBLE PRECISION NOT NULL DEFAULT 8, horas_extra DOUBLE PRECISION NOT NULL DEFAULT 0, notas TEXT DEFAULT '', creado TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS viajes (id BIGSERIAL PRIMARY KEY, fecha TEXT NOT NULL, concepto TEXT NOT NULL, importe DOUBLE PRECISION NOT NULL DEFAULT 200, pagado INTEGER NOT NULL DEFAULT 0, fecha_pago TEXT DEFAULT '', notas TEXT DEFAULT '', creado TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS pagos (id BIGSERIAL PRIMARY KEY, fecha TEXT NOT NULL, concepto TEXT NOT NULL, importe DOUBLE PRECISION NOT NULL, categoria TEXT NOT NULL DEFAULT 'otro', notas TEXT DEFAULT '', creado TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS notas (id BIGSERIAL PRIMARY KEY, fecha TEXT NOT NULL, titulo TEXT NOT NULL, contenido TEXT NOT NULL, creado TEXT NOT NULL)",
+    ]
+    with conn.cursor() as cur:
+        for statement in statements:
+            cur.execute(statement)
+
+
 def is_known_demo_destination(conn):
     """Accept only the app's exact first-run seed, never arbitrary user data."""
     rows = {t: pg_rows(conn, t) for t in TABLES}
