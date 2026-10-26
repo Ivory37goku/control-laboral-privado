@@ -31,6 +31,9 @@ jobs:
           assert response.status_code == 200, response.status_code
           response = client.get("/")
           assert response.status_code == 200, response.status_code
+          response = client.post("/login?next=https://example.com", data={"password": "test-password"})
+          assert response.status_code == 302, response.status_code
+          assert response.headers["Location"] == "/", response.headers.get("Location")
           with module.db() as con:
               hours = con.execute("SELECT COALESCE(SUM(horas_extra), 0) AS n FROM jornadas").fetchone()["n"]
               trips = con.execute("SELECT COALESCE(SUM(importe), 0) AS n FROM viajes WHERE pagado=0").fetchone()["n"]
@@ -77,6 +80,9 @@ jobs:
           assert response.status_code == 200, response.status_code
           response = client.get("/")
           assert response.status_code == 200, response.status_code
+          response = client.post("/login?next=https://example.com", data={"password": "test-password"})
+          assert response.status_code == 302, response.status_code
+          assert response.headers["Location"] == "/", response.headers.get("Location")
           with module.db() as con:
               hours = con.execute("SELECT COALESCE(SUM(horas_extra), 0) AS n FROM jornadas").fetchone()["n"]
               trips = con.execute("SELECT COALESCE(SUM(importe), 0) AS n FROM viajes WHERE pagado=0").fetchone()["n"]
