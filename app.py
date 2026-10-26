@@ -2,6 +2,7 @@ import os
 import sqlite3
 import csv
 import io
+import json
 from datetime import date, datetime
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
@@ -13,6 +14,7 @@ except ImportError:
     OpenAI = None
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(APP_DIR, "mi_trabajo.db"))
 BACKUP_DIR = os.environ.get("BACKUP_DIR", os.path.join(APP_DIR, "copias_seguridad"))
 app = Flask(__name__)
@@ -20,7 +22,28 @@ app.secret_key = os.environ.get("SECRET_KEY", "cambia-esta-clave-antes-de-public
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
 
+class PostgresCompat:
+    def __init__(self, connection): self.connection = connection
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+    def __exit__(self, exc_type, exc, tb): return self.connection.__exit__(exc_type, exc, tb)
+    def execute(self, sql, params=()):
+        sql = sql.replace("?", "%s")
+        sql = sql.replace("INSERT OR IGNORE INTO ajustes", "INSERT INTO ajustes")
+        if sql.lstrip().upper().startswith("INSERT INTO AJUSTES") and "ON CONFLICT" not in sql.upper():
+            sql = sql.rstrip().rstrip(";") + " ON CONFLICT (clave) DO NOTHING"
+        return self.connection.execute(sql, params)
+    def executescript(self, script):
+        for statement in script.split(";"):
+            if statement.strip(): self.execute(statement)
+        return self
+
 def db():
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        return PostgresCompat(psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10))
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
@@ -28,9 +51,10 @@ def db():
 
 
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    if not DATABASE_URL:
+        os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with db() as con:
-        con.executescript("""
+        schema = """
         CREATE TABLE IF NOT EXISTS jornadas (
           id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL,
           entrada TEXT DEFAULT '', salida TEXT DEFAULT '',
@@ -54,14 +78,17 @@ def init_db():
           id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL,
           titulo TEXT NOT NULL, contenido TEXT NOT NULL, creado TEXT NOT NULL
         );
-        """)
+        """
+        if DATABASE_URL:
+            schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+        con.executescript(schema)
         defaults = {
             "hora_extra_euros": "", "horas_normales_dia": "8",
             "dias_trabajo": "Lunes a viernes", "horario_habitual": "08:00-16:00, sin pausa",
             "seeded_demo": "no"
         }
         for k, v in defaults.items():
-            con.execute("INSERT OR IGNORE INTO ajustes(clave,valor) VALUES (?,?)", (k,v))
+            con.execute("INSERT INTO ajustes(clave,valor) VALUES (?,?) ON CONFLICT(clave) DO NOTHING", (k,v))
 
 
 def get_setting(key, default=""):
@@ -363,19 +390,29 @@ def exportar():
 def backup():
     os.makedirs(BACKUP_DIR, exist_ok=True)
     if request.method == "POST":
-        dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
-        with db() as source, sqlite3.connect(dest) as target:
-            source.backup(target)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if DATABASE_URL:
+            dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{stamp}.json")
+            snapshot = {}
+            with db() as source:
+                for table in ("jornadas", "viajes", "pagos", "ajustes", "notas"):
+                    snapshot[table] = [dict(row) for row in source.execute(f"SELECT * FROM {table}").fetchall()]
+            with open(dest, "w", encoding="utf-8") as output:
+                json.dump(snapshot, output, ensure_ascii=False, indent=2, default=str)
+        else:
+            dest = os.path.join(BACKUP_DIR, f"mi_trabajo_{stamp}.db")
+            with db() as source, sqlite3.connect(dest) as target:
+                source.backup(target)
         flash(f"Copia creada: {os.path.basename(dest)}", "success")
         return redirect(url_for("backup"))
-    files = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith(".db")], reverse=True)
+    files = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith((".db", ".json"))], reverse=True)
     return render_template("backup.html", files=files)
 
 
 @app.route("/backup/<path:filename>")
 @login_required
 def download_backup(filename):
-    if "/" in filename or "\\" in filename or not filename.endswith(".db"):
+    if "/" in filename or "\\" in filename or not filename.endswith((".db", ".json")):
         abort(400)
     path = os.path.join(BACKUP_DIR, filename)
     if not os.path.isfile(path):
