@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Check Python syntax
-        run: python -m py_compile app.py
+        run: python -m py_compile app.py scripts/import_sqlite_to_neon.py
       - name: Smoke test SQLite backend
         env:
           DATABASE_PATH: /tmp/control-laboral-test.db
