@@ -10,6 +10,7 @@ QUÉ ES
 - Asistente local gratuito que resume horas, viajes y pagos sin enviar datos fuera de la aplicación.
 - Protección CSRF en formularios y validación de integridad de las copias descargables.
 - Restauración de copias con validación y copia de seguridad previa automática.
+- Fichaje automático de lunes a viernes a las 16:00, con horario 08:00–16:00 y sin horas extra. Evita duplicados y deja nota para identificar los registros automáticos.
 - Contraseña de acceso mediante variable de entorno.
 
 DATOS PRECARGADOS
@@ -62,6 +63,12 @@ ASISTENTE LOCAL GRATUITO
 - Solo ofrece consultas y resúmenes; no puede crear, editar ni borrar registros.
 - Para modificar datos, usa los formularios normales de la aplicación.
 
+FICHAJE AUTOMÁTICO
+- En Render, un trabajo programado ejecuta el fichaje de lunes a viernes a las 16:00, hora de Canarias.
+- Guarda entrada 08:00, salida 16:00, 8 horas normales y 0 extra. Si ya existe un fichaje para esa fecha, no crea otro ni lo modifica.
+- Cada registro incluye una nota indicando que se creó automáticamente y que no se verificó manualmente. Corrígelo si hubo ausencia o el horario real fue distinto.
+- El trabajo de Render tiene un coste mínimo de 1 USD al mes; el plan gratuito de servicios web no incluye trabajos cron.
+
 SEGURIDAD Y LIMITACIONES
 - Usa HTTPS al desplegar.
 - Cambia SECRET_KEY y configura APP_PASSWORD.
@@ -73,4 +80,5 @@ SEGURIDAD Y LIMITACIONES
 - No se conecta automáticamente a Sesame. Importar datos requiere exportación o integración
   autorizada disponible por parte de tu empresa.
 - La app es un registro personal, no determina por sí sola el cálculo legal de nóminas.
+
 
