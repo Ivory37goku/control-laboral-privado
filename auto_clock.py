@@ -1,20 +1,12 @@
-"""Create the usual weekday shift automatically at 16:00 Canary Islands time."""
+"""Create today's usual weekday shift after 16:00 Canary Islands time."""
 
 from datetime import datetime
-import os
 from zoneinfo import ZoneInfo
-
-from app import db
-
 
 CANARY_TZ = ZoneInfo("Atlantic/Canary")
 
 
-def record_scheduled_shift(now=None):
-    if os.environ.get("IS_PULL_REQUEST", "false").lower() == "true":
-        print("No se crea fichaje: ejecución en una vista previa.")
-        return False
-
+def record_scheduled_shift(db_factory, now=None):
     now = now or datetime.now(CANARY_TZ)
     if now.tzinfo is None:
         now = now.replace(tzinfo=CANARY_TZ)
@@ -24,12 +16,12 @@ def record_scheduled_shift(now=None):
     if now.weekday() >= 5:
         print("No se crea fichaje: fin de semana.")
         return False
-    if now.hour != 16:
+    if now.hour < 16:
         print(f"No se crea fichaje: son las {now:%H:%M} en Canarias.")
         return False
 
     work_date = now.date().isoformat()
-    with db() as con:
+    with db_factory() as con:
         existing = con.execute(
             "SELECT id FROM jornadas WHERE fecha=? LIMIT 1", (work_date,)
         ).fetchone()
@@ -57,5 +49,7 @@ def record_scheduled_shift(now=None):
 
 
 if __name__ == "__main__":
-    record_scheduled_shift()
+    from app import db
+
+    record_scheduled_shift(db)
 
