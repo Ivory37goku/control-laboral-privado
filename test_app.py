@@ -260,6 +260,12 @@ class ControlLaboralTests(unittest.TestCase):
         self.assertEqual([(row["concepto"], row["importe"]) for row in rows], [("Antes", 20)])
         self.assertEqual(sum(name.endswith(".db") for name in os.listdir(application.BACKUP_DIR)), 2)
 
+    def test_goku_background_covers_full_desktop_viewport(self):
+        self.login()
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("inset:0;width:100vw", page)
+        self.assertIn("background-position:center center;background-size:cover", page)
+
     def test_goku_artwork_is_served_as_static_background_asset(self):
         response = self.client.get("/static/goku-bg.svg")
         self.assertEqual(response.status_code, 200)
