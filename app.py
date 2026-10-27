@@ -395,6 +395,28 @@ def delete_viaje(item_id):
     return redirect(url_for("viajes"))
 
 
+def get_payment_history(con):
+    payment_rows = con.execute("SELECT * FROM pagos ORDER BY fecha DESC,id DESC").fetchall()
+    paid_trips = con.execute("SELECT * FROM viajes WHERE pagado=1 ORDER BY COALESCE(NULLIF(fecha_pago,''),fecha) DESC,id DESC").fetchall()
+    rows = [
+        {"id": row["id"], "fecha": row["fecha"], "fecha_tipo": "Fecha del pago", "concepto": row["concepto"],
+         "categoria": {"horas_extra": "Horas extra", "viaje": "Viaje", "otro": "Otro"}.get(row["categoria"], row["categoria"]),
+         "importe": row["importe"], "notas": row["notas"], "origen": "Pago registrado",
+         "url": url_for("edit_pago", item_id=row["id"])}
+        for row in payment_rows
+    ]
+    rows.extend(
+        {"id": row["id"], "fecha": row["fecha_pago"] or row["fecha"],
+         "fecha_tipo": "Fecha del cobro" if row["fecha_pago"] else "Fecha del viaje", "concepto": row["concepto"],
+         "categoria": "Viaje", "importe": row["importe"], "notas": row["notas"],
+         "origen": "Viaje marcado como pagado", "url": url_for("viajes")}
+        for row in paid_trips
+    )
+    rows.sort(key=lambda row: (row["fecha"], row["id"], row["origen"]), reverse=True)
+    total_received = sum(float(row["importe"] or 0) for row in rows)
+    return rows, total_received
+
+
 @app.route("/pagos", methods=["GET", "POST"])
 @login_required
 def pagos():
@@ -419,8 +441,9 @@ def pagos():
         flash("Pago registrado en el histórico.", "success")
         return redirect(url_for("pagos"))
     with db() as con:
-        rows = con.execute("SELECT * FROM pagos ORDER BY fecha DESC,id DESC").fetchall()
-    return render_template("pagos.html", rows=rows, today=date.today().isoformat(), editing=None)
+        rows, total_received = get_payment_history(con)
+    return render_template("pagos.html", rows=rows, total_received=total_received,
+        today=date.today().isoformat(), editing=None)
 
 
 @app.route("/pagos/<int:item_id>/editar", methods=["GET", "POST"])
@@ -446,10 +469,11 @@ def edit_pago(item_id):
         return redirect(url_for("pagos"))
     with db() as con:
         editing = con.execute("SELECT * FROM pagos WHERE id=?", (item_id,)).fetchone()
-        rows = con.execute("SELECT * FROM pagos ORDER BY fecha DESC,id DESC").fetchall()
+        rows, total_received = get_payment_history(con)
     if not editing:
         abort(404)
-    return render_template("pagos.html", rows=rows, today=date.today().isoformat(), editing=editing)
+    return render_template("pagos.html", rows=rows, total_received=total_received,
+        today=date.today().isoformat(), editing=editing)
 
 
 @app.route("/ajustes", methods=["GET", "POST"])
@@ -576,7 +600,11 @@ def exportar():
     if table not in allowed:
         abort(400)
     with db() as con:
-        rows = con.execute(f"SELECT * FROM {table}").fetchall()
+        if table == "pagos":
+            rows, _ = get_payment_history(con)
+            rows = [{key: row[key] for key in ("fecha", "fecha_tipo", "concepto", "categoria", "importe", "origen", "notas")} for row in rows]
+        else:
+            rows = con.execute(f"SELECT * FROM {table}").fetchall()
     output = io.StringIO()
     if rows:
         writer = csv.DictWriter(output, fieldnames=rows[0].keys(), delimiter=";")
