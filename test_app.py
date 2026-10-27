@@ -275,9 +275,110 @@ class ControlLaboralTests(unittest.TestCase):
         self.assertIn("aria-label=\"Ilustración de Goku\"", page)
         response.close()
 
+    def test_duplicate_journey_for_same_day_is_blocked_with_edit_link(self):
+        self.login()
+        token = self.csrf_from("/jornadas")
+        data = {"_csrf_token": token, "fecha": "2026-10-01", "entrada": "08:00",
+                "salida": "16:00", "horas_normales": "8", "horas_extra": "1",
+                "notas": "jornada de prueba"}
+        self.client.post("/jornadas", data=data)
+        response = self.client.post("/jornadas", data=data)
+        self.assertEqual(response.status_code, 302)
+        page = self.client.get(response.location).get_data(as_text=True)
+        self.assertIn("Ya existe un fichaje para ese día", page)
+        self.assertIn("Abrir y corregir el registro existente", page)
+        with application.db() as con:
+            count = con.execute("SELECT COUNT(*) n FROM jornadas WHERE fecha=?", ("2026-10-01",)).fetchone()["n"]
+        self.assertEqual(count, 1)
+
+    def test_duplicate_payment_requires_explicit_confirmation(self):
+        self.login()
+        token = self.csrf_from("/pagos")
+        data = {"_csrf_token": token, "fecha": "2026-10-01", "concepto": "Pago extra",
+                "importe": "40.00", "categoria": "horas_extra", "notas": ""}
+        self.client.post("/pagos", data=data)
+        response = self.client.post("/pagos", data=data)
+        page = self.client.get(response.location)
+        self.assertIn("Puede ser un pago duplicado", page.get_data(as_text=True))
+        token_match = re.search(r'name="_csrf_token" value="([^"]+)"', page.get_data(as_text=True))
+        self.assertIsNotNone(token_match)
+        data["_csrf_token"] = token_match.group(1)
+        data["confirmar_duplicado"] = "1"
+        self.client.post("/pagos", data=data)
+        with application.db() as con:
+            count = con.execute("SELECT COUNT(*) n FROM pagos WHERE fecha=? AND concepto=?",
+                                ("2026-10-01", "Pago extra")).fetchone()["n"]
+        self.assertEqual(count, 2)
+
+    def test_jornada_filter_limits_results_to_requested_status(self):
+        with application.db() as con:
+            con.execute("INSERT INTO jornadas(fecha,entrada,salida,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-10-01", "08:00", "16:00", 8, 0, "[REVISADO]", "now"))
+            con.execute("INSERT INTO jornadas(fecha,entrada,salida,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-10-02", "08:00", "16:00", 8, 1, "[SIN REVISAR]", "now"))
+        self.login()
+        with patch.object(application, "record_scheduled_shift"):
+            page = self.client.get("/jornadas?estado=provisional").get_data(as_text=True)
+        self.assertIn("02/10/2026", page)
+        self.assertNotIn("01/10/2026", page)
+
+    def test_annual_summary_separates_pending_trips_and_received_payments(self):
+        with application.db() as con:
+            con.execute("INSERT INTO jornadas(fecha,entrada,salida,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-03-10", "08:00", "16:00", 8, 2, "[REVISADO]", "now"))
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,fecha_pago,notas,creado) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-03-12", "Pendiente", 200, 0, "", "", "now"))
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,fecha_pago,notas,creado) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-03-13", "Cobrado", 100, 1, "2026-04-01", "", "now"))
+            con.execute("INSERT INTO pagos(fecha,concepto,importe,categoria,notas,creado) VALUES(?,?,?,?,?,?)",
+                        ("2026-05-01", "Horas extra", 40, "horas_extra", "", "now"))
+        self.login()
+        with patch.object(application, "record_scheduled_shift"):
+            page = self.client.get("/informes/anual?anio=2026").get_data(as_text=True)
+        self.assertIn("2.00 h", page)
+        self.assertIn("200,00 €", page)
+        self.assertIn("140,00 €", page)
+        self.assertIn("40,00 €", page)
+
+    def test_monthly_report_warns_before_closing_incomplete_month(self):
+        with application.db() as con:
+            con.execute("INSERT INTO jornadas(fecha,entrada,salida,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-10-10", "", "16:00", 8, 0, "[SIN REVISAR]", "now"))
+        self.login()
+        with patch.object(application, "record_scheduled_shift"):
+            page = self.client.get("/informes?mes=2026-10").get_data(as_text=True)
+        self.assertIn("Este mes todavía no está listo para cerrar", page)
+        self.assertIn("Descargar igualmente sin cerrar el mes", page)
+        self.assertIn("entrada o salida sin completar", page)
+
+    def test_pwa_install_files_are_available_without_caching_private_pages(self):
+        manifest_response = self.client.get("/static/manifest.webmanifest")
+        self.assertEqual(manifest_response.status_code, 200)
+        manifest = manifest_response.get_json()
+        manifest_response.close()
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertIn("goku-bg.svg", manifest["icons"][0]["src"])
+        worker_response = self.client.get("/service-worker.js")
+        self.assertEqual(worker_response.status_code, 200)
+        self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
+        self.assertNotIn("caches.open", worker_response.get_data(as_text=True))
+        worker_response.close()
+
+    def test_trip_filter_searches_concept_within_date_range(self):
+        with application.db() as con:
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,notas,creado) VALUES(?,?,?,?,?,?)",
+                        ("2026-10-05", "Hotel Madrid", 80, 0, "", "now"))
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,notas,creado) VALUES(?,?,?,?,?,?)",
+                        ("2026-09-05", "Taxi aeropuerto", 25, 0, "", "now"))
+        self.login()
+        with patch.object(application, "record_scheduled_shift"):
+            page = self.client.get("/viajes?desde=2026-10-01&hasta=2026-10-31&buscar=hotel").get_data(as_text=True)
+        self.assertIn("Hotel Madrid", page)
+        self.assertNotIn("Taxi aeropuerto", page)
+
     def test_pages_render_and_session_cookie_security_defaults(self):
         self.login()
-        for path in ("/", "/jornadas", "/viajes", "/pagos", "/informes", "/asistente", "/ajustes", "/backup"):
+        for path in ("/", "/jornadas", "/viajes", "/pagos", "/informes", "/informes/anual", "/asistente", "/ajustes", "/backup"):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200, path)
             page = response.get_data(as_text=True)
