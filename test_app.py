@@ -266,6 +266,7 @@ class ControlLaboralTests(unittest.TestCase):
         page = response.get_data(as_text=True)
         self.assertIn("data:image/jpeg;base64,", page)
         self.assertIn("aria-label=\"Ilustración de Goku\"", page)
+        response.close()
 
     def test_pages_render_and_session_cookie_security_defaults(self):
         self.login()
