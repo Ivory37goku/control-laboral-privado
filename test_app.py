@@ -55,7 +55,8 @@ class ControlLaboralTests(unittest.TestCase):
         page = response.get_data(as_text=True)
         self.assertIn("400,00 €", page)
         self.assertIn("200,00 €", page)
-        self.assertIn("Pagos registrados y viajes pagados", page)
+        self.assertIn("Pagos anotados", page)
+        self.assertIn("Viajes cobrados", page)
 
     def test_payment_history_and_csv_include_paid_trips_but_not_pending_trips(self):
         with application.db() as con:
