@@ -57,6 +57,32 @@ class ControlLaboralTests(unittest.TestCase):
         self.assertIn("200,00 €", page)
         self.assertIn("Pagos registrados y viajes pagados", page)
 
+    def test_payment_history_and_csv_include_paid_trips_but_not_pending_trips(self):
+        with application.db() as con:
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,fecha_pago,creado) VALUES(?,?,?,?,?,?)",
+                         ("2026-09-26", "Viaje cobrado", 400, 1, "2026-10-02", "now"))
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,creado) VALUES(?,?,?,?,?)",
+                         ("2026-10-31", "Viaje pendiente", 200, 0, "now"))
+            con.execute("INSERT INTO pagos(fecha,concepto,importe,categoria,creado) VALUES(?,?,?,?,?)",
+                         ("2026-10-03", "Pago de horas extra", 50, "horas_extra", "now"))
+        self.login()
+
+        response = self.client.get("/pagos")
+        page = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("450,00 €", page)
+        self.assertIn("Viaje cobrado", page)
+        self.assertIn("Fecha del cobro", page)
+        self.assertIn("Pago de horas extra", page)
+        self.assertNotIn("Viaje pendiente", page)
+
+        exported = self.client.get("/exportar?tabla=pagos")
+        csv_data = exported.get_data(as_text=True)
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn("Viaje cobrado", csv_data)
+        self.assertIn("Pago de horas extra", csv_data)
+        self.assertNotIn("Viaje pendiente", csv_data)
+
     def test_editing_journey_trip_and_payment_persists_changes(self):
         with application.db() as con:
             jornada_id = con.execute("INSERT INTO jornadas(fecha,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?)",
