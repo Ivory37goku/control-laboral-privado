@@ -10,7 +10,6 @@ QUÉ ES
 - Estados revisado/provisional, comparación mensual y resumen anual de horas, viajes y cobros.
 - Búsqueda y filtros por fechas, estado, categoría y concepto; avisos de jornadas incompletas y cierre mensual.
 - Protección contra fichajes duplicados y confirmación explícita de pagos que parecen repetidos.
-- Instalación en la pantalla de inicio del móvil como acceso tipo app, sin guardar los datos laborales en caché sin conexión.
 - Resúmenes mensuales imprimibles y descargables en CSV; exportación CSV para abrir con Excel.
 - Asistente local gratuito que resume horas, viajes y pagos sin enviar datos fuera de la aplicación.
 - Protección CSRF en formularios y validación de integridad de las copias descargables.
