@@ -1,18 +1,48 @@
 {% extends "base.html" %}{% block title %}Resumen · Mi Control Laboral{% endblock %}
 {% block content %}
 <section class="hero hero-dashboard mb-4"><div class="row align-items-center g-3"><div class="col-md-8"><div class="small opacity-75 mb-2">PANEL PERSONAL</div><h1 class="display-6 fw-bold mb-2">Tu trabajo, de un vistazo.</h1><p class="mb-0 opacity-75">Horario habitual: {{ work_schedule or 'No configurado' }}. Revisa los fichajes que aparezcan como provisionales.</p></div><div class="col-md-4 text-md-end"><a href="{{ url_for('jornadas') }}" class="btn btn-light me-1">+ Añadir horas</a><a href="{{ url_for('viajes') }}" class="btn btn-outline-light">+ Viaje</a></div></div></section>
+
+<section class="today-card mb-4" aria-labelledby="todayTitle">
+  <div class="today-symbol" aria-hidden="true">◷</div>
+  <div class="today-copy">
+    <div class="today-heading"><div><div class="eyebrow">HOY · {{ today_date|date_es }}</div><h2 class="h5 fw-bold mb-1" id="todayTitle">Fichaje de hoy</h2></div>
+    {% if today_entry %}
+      {% if today_entry.provisional %}<span class="badge badge-provisional">Provisional · revisar</span>{% else %}<span class="badge badge-reviewed">Revisado</span>{% endif %}
+    {% else %}<span class="badge badge-neutral">Sin fichar</span>{% endif %}
+    </div>
+    {% if today_entry %}
+      <p class="today-detail mb-2"><strong>{{ today_entry.entrada or '—' }}–{{ today_entry.salida or '—' }}</strong><span class="today-dot">·</span>{{ '%.2f'|format(today_entry.horas_normales) }} h normales<span class="today-dot">·</span>{{ '%.2f'|format(today_entry.horas_extra) }} h extra</p>
+      {% if today_entry.provisional %}<p class="small muted mb-3">Comprueba que el horario refleja tu jornada real.</p>{% else %}<p class="small muted mb-3">La jornada de hoy aparece revisada.</p>{% endif %}
+      <a class="btn btn-sm btn-outline-success" href="{{ url_for('edit_jornada',item_id=today_entry.id) }}">Revisar fichaje</a>
+    {% else %}
+      <p class="small muted mb-3">Todavía no hay jornada registrada para hoy.</p><a class="btn btn-sm btn-outline-success" href="{{ url_for('jornadas') }}">Añadir jornada</a>
+    {% endif %}
+  </div>
+</section>
+
 <div class="row g-3 mb-4">
-<div class="col-6 col-lg-3"><div class="stat-card"><div class="stat-label">Horas extra</div><div class="stat-number">{{ '%.2f'|format(total_h) }} h</div><div class="small muted">Acumuladas</div></div></div>
-<div class="col-6 col-lg-3"><div class="stat-card"><div class="stat-label">Viajes pendientes</div><div class="stat-number">{{ trips_due|money }}</div><div class="small muted">{{ trips_count }} sin pagar</div></div></div>
-<div class="col-6 col-lg-3"><div class="stat-card"><div class="stat-label">Importe estimado extra</div><div class="stat-number">{% if overtime_due is not none %}{{ overtime_due|money }}{% else %}—{% endif %}</div><div class="small muted">{% if rate is not none %}{{ rate|money }}/hora{% else %}Configura la tarifa{% endif %}</div></div></div>
-<div class="col-6 col-lg-3"><div class="stat-card"><div class="stat-label">Pagos recibidos</div><div class="stat-number">{{ payments|money }}</div><div class="small muted">Pagos registrados y viajes pagados</div></div></div>
+  <div class="col-6 col-lg-3"><article class="stat-card"><div class="stat-card-head"><div class="stat-label">Horas extra</div><span class="stat-icon stat-icon-hours" aria-hidden="true">◷</span></div><div class="stat-number">{{ '%.2f'|format(total_h) }} <span class="stat-unit">h</span></div><div class="small muted">Acumuladas en todos los registros</div></article></div>
+  <div class="col-6 col-lg-3"><article class="stat-card"><div class="stat-card-head"><div class="stat-label">Viajes pendientes</div><span class="stat-icon stat-icon-pending" aria-hidden="true">↗</span></div><div class="stat-number">{{ trips_due|money }}</div><div class="small muted">{{ trips_count }} {{ 'viaje pendiente' if trips_count == 1 else 'viajes pendientes' }} por cobrar</div></article></div>
+  <div class="col-6 col-lg-3"><article class="stat-card"><div class="stat-card-head"><div class="stat-label">Extra estimada</div><span class="stat-icon stat-icon-estimate" aria-hidden="true">€</span></div><div class="stat-number">{% if overtime_due is not none %}{{ overtime_due|money }}{% else %}—{% endif %}</div><div class="small muted">{% if rate is not none %}Estimación · {{ rate|money }}/h{% else %}<a href="{{ url_for('ajustes') }}">Configura la tarifa</a>{% endif %}</div></article></div>
+  <div class="col-6 col-lg-3"><article class="stat-card stat-card-payments"><div class="stat-card-head"><div class="stat-label">Total recibido</div><span class="stat-icon stat-icon-paid" aria-hidden="true">✓</span></div><div class="stat-number">{{ payments|money }}</div><div class="payment-breakdown"><div><span>Pagos anotados</span><strong>{{ payments_registered|money }}</strong></div><div><span>Viajes cobrados</span><strong>{{ trips_paid|money }}</strong></div></div></article></div>
 </div>
-<div class="row g-4"><div class="col-lg-7"><section class="panel h-100"><div class="d-flex justify-content-between align-items-center mb-3"><div><h2 class="h5 fw-bold mb-1">Horas extra por mes</h2><div class="muted small">Según los registros guardados</div></div><a href="{{ url_for('informes') }}" class="small">Informes mensuales</a></div><canvas id="hoursChart" height="170"></canvas>{% if total_h %}<p class="small muted mt-3 mb-0">Revisa los registros provisionales en Horas y consulta el detalle de cada mes en Informes.</p>{% endif %}</section></div>
-<div class="col-lg-5"><section class="panel h-100"><h2 class="h5 fw-bold mb-3">Últimos viajes</h2>{% if trips %}<div class="table-responsive"><table class="table"><thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th></tr></thead><tbody>{% for t in trips %}<tr><td>{{ t.fecha|date_es }}</td><td>{{ t.concepto }}<br><span class="badge {{ 'badge-paid' if t.pagado else 'badge-pending' }}">{{ 'Pagado' if t.pagado else 'Pendiente' }}</span></td><td>{{ t.importe|money }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">Todavía no hay viajes.</p>{% endif %}<a class="btn btn-outline-success w-100 mt-2" href="{{ url_for('viajes') }}">Gestionar viajes</a></section></div></div>
-<section class="panel mt-4"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h5 fw-bold mb-0">Últimos registros de horas</h2><a href="{{ url_for('jornadas') }}">Gestionar</a></div>{% if recent %}<div class="table-responsive"><table class="table"><thead><tr><th>Fecha</th><th>Entrada/salida</th><th>Horas extra</th><th>Estado</th><th>Notas</th></tr></thead><tbody>{% for r in recent %}<tr><td>{{ r.fecha|date_es }}</td><td>{{ r.entrada or '—' }} / {{ r.salida or '—' }}</td><td class="fw-semibold">{{ '%.2f'|format(r.horas_extra) }} h</td><td>{{ 'Provisional · revisar' if r.provisional else 'Revisado' }}</td><td>{{ r.notas or '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">No hay jornadas todavía.</p>{% endif %}</section>
+
+<div class="row g-4">
+  <div class="col-lg-7"><section class="panel h-100"><div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="eyebrow">EVOLUCIÓN</div><h2 class="h5 fw-bold mb-1">Horas extra por mes</h2><div class="muted small">Últimos {{ 12 if months|length > 12 else months|length }} meses registrados</div></div><a href="{{ url_for('informes') }}" class="small text-nowrap">Informes →</a></div><div class="chart-total"><strong>{{ '%.2f'|format(total_h) }} h</strong><span>acumuladas</span></div><div class="chart-frame"><canvas id="hoursChart" aria-label="Gráfico de horas extra por mes"></canvas></div>{% if total_h %}<p class="small muted mt-3 mb-0">Consulta el detalle mensual y revisa las jornadas provisionales en Horas.</p>{% endif %}</section></div>
+  <div class="col-lg-5"><section class="panel h-100"><div class="eyebrow">REEMBOLSOS</div><h2 class="h5 fw-bold mb-3">Últimos viajes</h2>{% if trips %}<div class="table-responsive"><table class="table table-stack"><thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th></tr></thead><tbody>{% for t in trips %}<tr><td data-label="Fecha">{{ t.fecha|date_es }}</td><td data-label="Concepto">{{ t.concepto }}<br><span class="badge {{ 'badge-paid' if t.pagado else 'badge-pending' }}">{{ 'Pagado' if t.pagado else 'Pendiente' }}</span></td><td data-label="Importe" class="fw-semibold">{{ t.importe|money }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">Todavía no hay viajes.</p>{% endif %}<a class="btn btn-outline-success w-100 mt-2" href="{{ url_for('viajes') }}">Gestionar viajes</a></section></div>
+</div>
+
+<section class="panel mt-4"><div class="d-flex justify-content-between align-items-end gap-3 flex-wrap mb-3"><div><div class="eyebrow">ACTIVIDAD</div><h2 class="h5 fw-bold mb-0">Últimos registros de horas</h2></div><a href="{{ url_for('jornadas') }}">Ver todas →</a></div>{% if recent %}<div class="table-responsive"><table class="table table-stack"><thead><tr><th>Fecha</th><th>Horario</th><th>Horas extra</th><th>Estado</th><th>Notas</th></tr></thead><tbody>{% for r in recent %}<tr><td data-label="Fecha">{{ r.fecha|date_es }}</td><td data-label="Horario">{{ r.entrada or '—' }} / {{ r.salida or '—' }}</td><td data-label="Horas extra" class="fw-semibold">{{ '%.2f'|format(r.horas_extra) }} h</td><td data-label="Estado">{% if r.provisional %}<span class="badge badge-provisional">Provisional · revisar</span>{% else %}<span class="badge badge-reviewed">Revisado</span>{% endif %}</td><td data-label="Notas">{{ r.notas or '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty-state"><span aria-hidden="true">◷</span><p class="mb-0">Todavía no hay jornadas. Añade el primer registro para empezar.</p></div>{% endif %}</section>
 {% endblock %}
 {% block scripts %}<script>
-const labels={{ months|map(attribute='mes')|list|tojson }};
-const values={{ months|map(attribute='horas')|list|tojson }};
-new Chart(document.getElementById('hoursChart'),{type:'bar',data:{labels,datasets:[{label:'Horas extra',data:values,borderWidth:0,borderRadius:7}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,title:{display:true,text:'Horas'}}}}});
+const monthRows={{ months|list|tojson }};
+const visibleMonths=monthRows.slice(-12);
+const labels=visibleMonths.map(row=>{const [year,month]=row.mes.split('-').map(Number);return new Intl.DateTimeFormat('es-ES',{month:'short',year:'2-digit'}).format(new Date(year,month-1,1));});
+const values=visibleMonths.map(row=>Number(row.horas));
+const chartCanvas=document.getElementById('hoursChart');
+const chartContext=chartCanvas.getContext('2d');
+const barGradient=chartContext.createLinearGradient(0,0,0,230);
+barGradient.addColorStop(0,'#2e8b61');
+barGradient.addColorStop(1,'#b8e2ca');
+new Chart(chartCanvas,{type:'bar',data:{labels,datasets:[{label:'Horas extra',data:values,backgroundColor:barGradient,hoverBackgroundColor:'#1e6b50',borderWidth:0,borderRadius:8,maxBarThickness:38}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:context=>' '+context.parsed.y.toFixed(2)+' h'}}},scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkip:true}},y:{beginAtZero:true,grid:{color:'#e8efeb'},ticks:{precision:0},title:{display:true,text:'Horas'}}}}});
 </script>{% endblock %}
