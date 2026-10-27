@@ -1,5 +1,6 @@
 {% extends "base.html" %}{% block title %}Acceso · Mi Control Laboral{% endblock %}
 {% block content %}<div class="row justify-content-center mt-4"><div class="col-md-6 col-lg-5"><div class="panel">
 <div class="mb-3"><span class="badge text-bg-success">Privado</span></div><h1 class="h3 fw-bold">Tu espacio de trabajo</h1><p class="muted">Introduce la contraseña configurada en el servidor para ver tus registros.</p>
-<form method="post"><label class="form-label" for="password">Contraseña</label><input class="form-control mb-3" id="password" name="password" type="password" required autofocus><button class="btn btn-success w-100">Entrar</button></form>
+<form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label class="form-label" for="password">Contraseña</label><input class="form-control mb-3" id="password" name="password" type="password" required autofocus><button class="btn btn-success w-100">Entrar</button></form>
 </div></div></div>{% endblock %}
+
