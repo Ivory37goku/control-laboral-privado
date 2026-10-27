@@ -295,10 +295,13 @@ def dashboard():
             FROM jornadas GROUP BY substr(fecha,1,7) ORDER BY mes""").fetchall()
         trips = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC LIMIT 6").fetchall()
         recent = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC LIMIT 6").fetchall()
-        payments = con.execute("""SELECT
-            (SELECT COALESCE(SUM(importe),0) FROM pagos) +
-            (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=1) n
-        """).fetchone()["n"]
+        payment_summary = con.execute("""SELECT
+            (SELECT COALESCE(SUM(importe),0) FROM pagos) pagos_anotados,
+            (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=1) viajes_cobrados
+        """).fetchone()
+        today_date = canary_now().date().isoformat()
+        today_row = con.execute("SELECT * FROM jornadas WHERE fecha=? ORDER BY id DESC LIMIT 1",
+            (today_date,)).fetchone()
     rate = get_setting("hora_extra_euros", "").strip()
     try:
         rate_num = float(rate.replace(",", ".")) if rate else None
@@ -306,9 +309,15 @@ def dashboard():
         rate_num = None
     overtime_due = total_h * rate_num if rate_num is not None else None
     recent = [journey_for_display(row) for row in recent]
+    today_entry = journey_for_display(today_row) if today_row else None
+    payments_registered = payment_summary["pagos_anotados"]
+    trips_paid = payment_summary["viajes_cobrados"]
+    payments = payments_registered + trips_paid
     return render_template("dashboard.html", total_h=total_h, trips_due=trips_due, trips_count=trips_count,
         months=[dict(x) for x in months], trips=trips, recent=recent, payments=payments,
-        rate=rate_num, overtime_due=overtime_due, work_schedule=get_setting("horario_habitual"))
+        payments_registered=payments_registered, trips_paid=trips_paid, today_date=today_date,
+        today_entry=today_entry, rate=rate_num, overtime_due=overtime_due,
+        work_schedule=get_setting("horario_habitual"))
 
 
 @app.route("/jornadas", methods=["GET", "POST"])
