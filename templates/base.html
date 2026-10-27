@@ -8,16 +8,16 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-:root{--ink:#17231e;--green:#1e6b50;--mint:#e7f3ed;--paper:#f6f8f6;--line:#e2e8e4}
-body{background:var(--paper);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,sans-serif}
-.navbar{background:#14251f}.navbar-brand{font-weight:750;letter-spacing:-.03em}.nav-link{color:#d8e8df!important}
-.main-wrap{max-width:1160px}.hero{background:linear-gradient(120deg,#173b2d,#267253);color:white;border-radius:24px;padding:26px}
-.stat-card,.panel{border:1px solid var(--line);border-radius:18px;background:white;box-shadow:0 4px 20px #14251f08}
+:root{--ink:#17231e;--green:#1e6b50;--mint:#e7f3ed;--paper:#f4f7f5;--line:#e2e8e4;--soft-shadow:0 12px 32px #14251f0c}
+body{background:var(--paper);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,sans-serif;position:relative} body::before{content:"";position:fixed;inset:3.8rem 0 0 auto;width:min(56vw,680px);z-index:0;pointer-events:none;opacity:.055;background:url('{{ url_for("static", filename="goku-bg.svg") }}') right top/min(56vw,680px) auto no-repeat} body>nav,body>main{position:relative;z-index:1}
+.navbar{background:linear-gradient(105deg,#11251e,#193c2e);box-shadow:0 3px 16px #07150f22}.navbar-brand{font-weight:750;letter-spacing:-.03em;display:inline-flex;align-items:center;gap:.65rem}.brand-logo{width:38px;height:38px;object-fit:cover;border-radius:50%;border:1px solid #ffffff80;box-shadow:0 0 0 3px #ffffff12}.nav-link{color:#d8e8df!important;border-radius:9px;margin-right:.15rem;transition:background .18s ease,color .18s ease}.nav-link:hover,.nav-link.active{color:white!important;background:#ffffff17}.nav-link.active{box-shadow:inset 0 -2px 0 #a8e4c0}
+.main-wrap{max-width:1160px}.hero{background:linear-gradient(120deg,#173b2d,#267253);color:white;border-radius:24px;padding:26px}.hero-dashboard{background-image:linear-gradient(100deg,#173b2df2 0%,#173b2de8 48%,#267253c9 100%),url('{{ url_for("static", filename="goku-bg.svg") }}');background-size:cover;background-position:center 38%;box-shadow:0 16px 36px #153a2d24}
+.stat-card,.panel{border:1px solid var(--line);border-radius:18px;background:white;box-shadow:var(--soft-shadow)}.stat-card{transition:transform .18s ease,box-shadow .18s ease}.stat-card:hover{transform:translateY(-2px);box-shadow:0 14px 30px #14251f12}
 .stat-card{padding:20px;height:100%}.stat-label{font-size:.88rem;color:#63736a}.stat-number{font-size:clamp(1.5rem,3vw,2.1rem);font-weight:750;letter-spacing:-.04em}
 .btn-success{background:var(--green);border-color:var(--green)}.btn-success:hover{background:#174e3a}
-.form-control,.form-select{border-radius:10px;padding:.68rem}.panel{padding:22px}.badge-pending{background:#fff0d2;color:#805300}.badge-paid{background:#e1f4e8;color:#17623d}
+.form-control,.form-select{border-radius:10px;padding:.68rem}.panel{padding:22px}.form-control:focus,.form-select:focus,.btn:focus-visible,.nav-link:focus-visible{box-shadow:0 0 0 .22rem #1e6b5038;outline:none}.table thead th{color:#63736a;font-size:.82rem;font-weight:650;text-transform:uppercase;letter-spacing:.035em;border-bottom-color:var(--line)}.badge-pending{background:#fff0d2;color:#805300}.badge-paid{background:#e1f4e8;color:#17623d}
 .table>:not(caption)>*>*{padding:.8rem .65rem;vertical-align:middle}.muted{color:#718078}.bottom-nav{display:none}
-@media(max-width:700px){.navbar .container{align-items:flex-start;gap:8px}.navbar-nav{flex-direction:row;flex-wrap:wrap;gap:2px}.nav-link{font-size:.84rem;padding:.3rem .45rem!important}.hero{padding:20px;border-radius:18px}.panel{padding:16px}.hide-mobile{display:none}}
+@media(max-width:700px){body::before{width:min(82vw,420px);opacity:.035;background-size:min(82vw,420px) auto}.navbar .container{align-items:flex-start;gap:8px}.navbar-nav{flex-direction:row;flex-wrap:wrap;gap:2px}.nav-link{font-size:.84rem;padding:.3rem .45rem!important}.hero{padding:20px;border-radius:18px}.hero-dashboard{background-position:62% center}.panel{padding:16px}.hide-mobile{display:none}}
 @media print{.navbar,footer,.no-print,.alert{display:none!important}body{background:white}.main-wrap{max-width:none!important;padding:0!important}.panel,.stat-card{box-shadow:none;break-inside:avoid}a{color:inherit;text-decoration:none}}
 </style>
 </head>
@@ -25,19 +25,19 @@ body{background:var(--paper);color:var(--ink);font-family:system-ui,-apple-syste
 <nav class="navbar navbar-expand-lg navbar-dark">
 <div class="container main-wrap py-2 d-block">
 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-<a class="navbar-brand" href="{{ url_for('dashboard') }}">◈ Mi Control Laboral</a>
+<a class="navbar-brand" href="{{ url_for('dashboard') }}"><img class="brand-logo" src="{{ url_for("static", filename="goku-bg.svg") }}" alt="" aria-hidden="true">Mi Control Laboral</a>
 {% if session.get('logged_in') %}<form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-light">Salir</button></form>{% endif %}
 </div>
 {% if session.get('logged_in') %}
 <div class="navbar-nav mt-2">
-<a class="nav-link" href="{{ url_for('dashboard') }}">Resumen</a>
-<a class="nav-link" href="{{ url_for('jornadas') }}">Horas</a>
-<a class="nav-link" href="{{ url_for('viajes') }}">Viajes</a>
-<a class="nav-link" href="{{ url_for('pagos') }}">Pagos</a>
-<a class="nav-link" href="{{ url_for('informes') }}">Informes</a>
-<a class="nav-link" href="{{ url_for('asistente') }}">Asistente</a>
-<a class="nav-link" href="{{ url_for('ajustes') }}">Ajustes</a>
-<a class="nav-link" href="{{ url_for('backup') }}">Copias</a>
+<a class="nav-link{% if request.endpoint == 'dashboard' %} active{% endif %}" href="{{ url_for('dashboard') }}"{% if request.endpoint == 'dashboard' %} aria-current="page"{% endif %}>Resumen</a>
+<a class="nav-link{% if request.endpoint == 'jornadas' %} active{% endif %}" href="{{ url_for('jornadas') }}"{% if request.endpoint == 'jornadas' %} aria-current="page"{% endif %}>Horas</a>
+<a class="nav-link{% if request.endpoint == 'viajes' %} active{% endif %}" href="{{ url_for('viajes') }}"{% if request.endpoint == 'viajes' %} aria-current="page"{% endif %}>Viajes</a>
+<a class="nav-link{% if request.endpoint == 'pagos' %} active{% endif %}" href="{{ url_for('pagos') }}"{% if request.endpoint == 'pagos' %} aria-current="page"{% endif %}>Pagos</a>
+<a class="nav-link{% if request.endpoint == 'informes' %} active{% endif %}" href="{{ url_for('informes') }}"{% if request.endpoint == 'informes' %} aria-current="page"{% endif %}>Informes</a>
+<a class="nav-link{% if request.endpoint == 'asistente' %} active{% endif %}" href="{{ url_for('asistente') }}"{% if request.endpoint == 'asistente' %} aria-current="page"{% endif %}>Asistente</a>
+<a class="nav-link{% if request.endpoint == 'ajustes' %} active{% endif %}" href="{{ url_for('ajustes') }}"{% if request.endpoint == 'ajustes' %} aria-current="page"{% endif %}>Ajustes</a>
+<a class="nav-link{% if request.endpoint == 'backup' %} active{% endif %}" href="{{ url_for('backup') }}"{% if request.endpoint == 'backup' %} aria-current="page"{% endif %}>Copias</a>
 {% endif %}
 </div>
 </nav>
