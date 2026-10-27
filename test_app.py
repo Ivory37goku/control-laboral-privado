@@ -83,6 +83,99 @@ class ControlLaboralTests(unittest.TestCase):
         self.assertIn("Pago de horas extra", csv_data)
         self.assertNotIn("Viaje pendiente", csv_data)
 
+    def test_auto_clock_records_a_provisional_weekday_once_after_16(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from auto_clock import record_scheduled_shift
+
+        zone = application.CANARY_TZ or datetime.now().astimezone().tzinfo
+        before_four = datetime(2026, 10, 27, 15, 59, tzinfo=zone)
+        after_four = datetime(2026, 10, 27, 16, 0, tzinfo=zone)
+        saturday = datetime(2026, 10, 31, 17, 0, tzinfo=zone)
+
+        self.assertFalse(record_scheduled_shift(application.db, before_four))
+        self.assertFalse(record_scheduled_shift(application.db, saturday))
+        self.assertTrue(record_scheduled_shift(application.db, after_four))
+        self.assertFalse(record_scheduled_shift(application.db, after_four))
+
+        with application.db() as con:
+            rows = con.execute("SELECT * FROM jornadas WHERE fecha=?", ("2026-10-27",)).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["entrada"], rows[0]["salida"], rows[0]["horas_normales"], rows[0]["horas_extra"]),
+                         ("08:00", "16:00", 8, 0))
+        self.assertTrue(application.is_provisional_journey(rows[0]))
+
+    def test_monthly_report_filters_work_trips_and_cash_by_the_selected_month(self):
+        with application.db() as con:
+            con.execute("INSERT INTO jornadas(fecha,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?)",
+                         ("2026-09-10", 8, 1.5, "[SIN REVISAR] Estimación", "now"))
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,fecha_pago,creado) VALUES(?,?,?,?,?,?)",
+                         ("2026-09-12", "Viaje de septiembre", 200, 1, "2026-09-20", "now"))
+            con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,creado) VALUES(?,?,?,?,?)",
+                         ("2026-09-22", "Viaje pendiente", 100, 0, "now"))
+            con.execute("INSERT INTO pagos(fecha,concepto,importe,categoria,creado) VALUES(?,?,?,?,?)",
+                         ("2026-09-25", "Pago extra", 50, "horas_extra", "now"))
+            con.execute("INSERT INTO pagos(fecha,concepto,importe,categoria,creado) VALUES(?,?,?,?,?)",
+                         ("2026-10-02", "Pago de octubre", 300, "otro", "now"))
+
+        report = application.build_monthly_report("2026-09")
+        self.assertEqual(report["dias_registrados"], 1)
+        self.assertEqual(report["horas_normales"], 8)
+        self.assertEqual(report["horas_extra"], 1.5)
+        self.assertEqual(report["provisional_count"], 1)
+        self.assertEqual(report["viajes_total"], 300)
+        self.assertEqual(report["viajes_pagados"], 200)
+        self.assertEqual(report["viajes_pendientes"], 100)
+        self.assertEqual(report["total_recibido"], 250)
+        self.login()
+        response = self.client.get("/informes?mes=2026-09")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("Viaje de septiembre", page)
+        self.assertIn("Viaje pendiente", page)
+        self.assertIn("Provisional · revisar", page)
+        self.assertNotIn("Pago de octubre", page)
+        downloaded = self.client.get("/informes?mes=2026-09&descargar=csv")
+        csv_data = downloaded.get_data(as_text=True)
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertIn("Viaje de septiembre", csv_data)
+        self.assertIn("Pago extra", csv_data)
+        self.assertNotIn("Pago de octubre", csv_data)
+
+    def test_journey_can_be_marked_provisional_then_reviewed_while_editing(self):
+        self.login()
+        fields = {
+            "_csrf_token": self.csrf_from("/jornadas"),
+            "fecha": "2026-09-15",
+            "entrada": "08:00",
+            "salida": "16:00",
+            "horas_normales": "8",
+            "horas_extra": "0",
+            "notas": "Horario aproximado",
+            "provisional": "1",
+        }
+        self.assertEqual(self.client.post("/jornadas", data=fields).status_code, 302)
+        with application.db() as con:
+            row = con.execute("SELECT * FROM jornadas WHERE fecha=?", ("2026-09-15",)).fetchone()
+            item_id = row["id"]
+            self.assertTrue(application.is_provisional_journey(row))
+
+        csrf = self.csrf_from(f"/jornadas/{item_id}/editar")
+        updated = {
+            "_csrf_token": csrf,
+            "fecha": "2026-09-15",
+            "entrada": "08:00",
+            "salida": "17:00",
+            "horas_normales": "8",
+            "horas_extra": "1",
+            "notas": "Horario confirmado",
+        }
+        self.assertEqual(self.client.post(f"/jornadas/{item_id}/editar", data=updated).status_code, 302)
+        with application.db() as con:
+            row = con.execute("SELECT * FROM jornadas WHERE id=?", (item_id,)).fetchone()
+            self.assertFalse(application.is_provisional_journey(row))
+            self.assertIn("Horario confirmado", row["notas"])
+
     def test_editing_journey_trip_and_payment_persists_changes(self):
         with application.db() as con:
             jornada_id = con.execute("INSERT INTO jornadas(fecha,horas_normales,horas_extra,notas,creado) VALUES(?,?,?,?,?)",
@@ -107,30 +200,18 @@ class ControlLaboralTests(unittest.TestCase):
                 row = con.execute(f"SELECT * FROM {table} WHERE id=?", (jornada_id if table == "jornadas" else viaje_id if table == "viajes" else pago_id,)).fetchone()
                 self.assertIn("changed", " ".join(str(value) for value in row))
 
-    def test_assistant_receives_payment_context_without_database_writes(self):
+    def test_assistant_summarizes_saved_payments_without_database_writes(self):
         with application.db() as con:
             con.execute("INSERT INTO pagos(fecha,concepto,importe,categoria,creado) VALUES(?,?,?,?,?)",
                          ("2026-09-03", "Nomina", 120, "otro", "now"))
-        captured = {}
-
-        class FakeOpenAI:
-            def __init__(self, api_key):
-                self.responses = self
-
-            def create(self, **kwargs):
-                captured.update(kwargs)
-                return SimpleNamespace(output_text="Resumen listo")
-
         self.login()
-        with patch.object(application, "OpenAI", FakeOpenAI), patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-            before = self.row_count("pagos")
-            token = self.csrf_from("/asistente")
-            response = self.client.post("/asistente", data={"_csrf_token": token, "prompt": "Resume mis pagos"})
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("Resumen listo", response.get_data(as_text=True))
-            self.assertIn("Nomina", captured["input"])
-            self.assertIn("pagos_registrados_eur", captured["input"])
-            self.assertEqual(self.row_count("pagos"), before)
+        before = self.row_count("pagos")
+        token = self.csrf_from("/asistente")
+        response = self.client.post("/asistente", data={"_csrf_token": token, "prompt": "Resume mis pagos"})
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("Pagos anotados en el histórico: 120,00 €", page)
+        self.assertEqual(self.row_count("pagos"), before)
 
     def test_backup_is_checked_before_download(self):
         self.login()
@@ -181,7 +262,7 @@ class ControlLaboralTests(unittest.TestCase):
 
     def test_pages_render_and_session_cookie_security_defaults(self):
         self.login()
-        for path in ("/", "/jornadas", "/viajes", "/pagos", "/asistente", "/ajustes", "/backup"):
+        for path in ("/", "/jornadas", "/viajes", "/pagos", "/informes", "/asistente", "/ajustes", "/backup"):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200, path)
             page = response.get_data(as_text=True)
