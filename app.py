@@ -8,9 +8,11 @@ import secrets
 import tempfile
 import unicodedata
 from datetime import date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
 from werkzeug.security import check_password_hash, generate_password_hash
+from auto_clock import record_scheduled_shift
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +47,12 @@ def protect_state_changes():
         supplied = request.form.get("_csrf_token", "") or request.headers.get("X-CSRF-Token", "")
         if not expected or not supplied or not secrets.compare_digest(expected, supplied):
             abort(400, description="Token de formulario inválido. Recarga la página e inténtalo de nuevo.")
+
+
+@app.before_request
+def record_usual_shift_after_work():
+    if session.get("logged_in") and request.method == "GET" and request.endpoint != "static":
+        record_scheduled_shift(db)
 
 
 class PostgresCompat:
@@ -190,6 +198,51 @@ def parse_form_date(value):
     return date.fromisoformat(value)
 
 
+PROVISIONAL_JOURNEY_MARKER = "[SIN REVISAR]"
+REVIEWED_JOURNEY_MARKER = "[REVISADO]"
+try:
+    CANARY_TZ = ZoneInfo("Atlantic/Canary")
+except ZoneInfoNotFoundError:
+    # Windows may not include an IANA database; use the machine's local zone there.
+    CANARY_TZ = None
+
+
+def canary_now():
+    return datetime.now(CANARY_TZ) if CANARY_TZ else datetime.now().astimezone()
+
+
+def is_provisional_journey(row):
+    notes = (row["notas"] or "").strip()
+    if notes.startswith(PROVISIONAL_JOURNEY_MARKER):
+        return True
+    if notes.startswith(REVIEWED_JOURNEY_MARKER):
+        return False
+    normalized = unicodedata.normalize("NFKD", notes.casefold())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return any(term in normalized for term in ("provisional", "aproximad", "no verificado", "sin revisar", "estimacion"))
+
+
+def clean_journey_notes(notes):
+    notes = (notes or "").strip()
+    for marker in (PROVISIONAL_JOURNEY_MARKER, REVIEWED_JOURNEY_MARKER):
+        if notes.startswith(marker):
+            return notes[len(marker):].strip()
+    return notes
+
+
+def store_journey_notes(notes, provisional):
+    clean_notes = clean_journey_notes(notes)
+    marker = PROVISIONAL_JOURNEY_MARKER if provisional else REVIEWED_JOURNEY_MARKER
+    return f"{marker} {clean_notes}".strip()
+
+
+def journey_for_display(row):
+    item = dict(row)
+    item["provisional"] = is_provisional_journey(row)
+    item["notas"] = clean_journey_notes(item.get("notas"))
+    return item
+
+
 @app.template_filter("money")
 def money_filter(n):
     return money(float(n or 0))
@@ -252,6 +305,7 @@ def dashboard():
     except ValueError:
         rate_num = None
     overtime_due = total_h * rate_num if rate_num is not None else None
+    recent = [journey_for_display(row) for row in recent]
     return render_template("dashboard.html", total_h=total_h, trips_due=trips_due, trips_count=trips_count,
         months=[dict(x) for x in months], trips=trips, recent=recent, payments=payments,
         rate=rate_num, overtime_due=overtime_due, work_schedule=get_setting("horario_habitual"))
@@ -269,16 +323,19 @@ def jornadas():
         except (ValueError, TypeError):
             flash("Revisa la fecha y las horas introducidas.", "danger")
             return redirect(url_for("jornadas"))
+        provisional = request.form.get("provisional") == "1"
+        notes = store_journey_notes(request.form.get("notas", "").strip(), provisional)
         with db() as con:
             con.execute("""INSERT INTO jornadas(fecha,entrada,salida,horas_normales,horas_extra,notas,creado)
                 VALUES(?,?,?,?,?,?,?)""",
                 (fecha, request.form.get("entrada","").strip(), request.form.get("salida","").strip(),
-                 normales, extra, request.form.get("notas","").strip(), datetime.now().isoformat()))
-        flash("Jornada guardada.", "success")
+                 normales, extra, notes, datetime.now().isoformat()))
+        flash("Jornada guardada como provisional." if provisional else "Jornada guardada y marcada como revisada.", "success")
         return redirect(url_for("jornadas"))
     with db() as con:
         rows = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
-    return render_template("jornadas.html", rows=rows, today=date.today().isoformat(),
+    rows = [journey_for_display(row) for row in rows]
+    return render_template("jornadas.html", rows=rows, today=canary_now().date().isoformat(),
         normal_default=get_setting("horas_normales_dia", "8"), editing=None)
 
 
@@ -294,19 +351,22 @@ def edit_jornada(item_id):
         except (ValueError, TypeError):
             flash("Revisa la fecha y las horas introducidas.", "danger")
             return redirect(url_for("edit_jornada", item_id=item_id))
+        provisional = request.form.get("provisional") == "1"
+        notes = store_journey_notes(request.form.get("notas", "").strip(), provisional)
         with db() as con:
             con.execute("""UPDATE jornadas SET fecha=?,entrada=?,salida=?,horas_normales=?,horas_extra=?,notas=?
                 WHERE id=?""", (fecha, request.form.get("entrada", "").strip(),
-                request.form.get("salida", "").strip(), normales, extra,
-                request.form.get("notas", "").strip(), item_id))
-        flash("Jornada actualizada.", "success")
+                request.form.get("salida", "").strip(), normales, extra, notes, item_id))
+        flash("Jornada actualizada; queda pendiente de revisión." if provisional else "Jornada actualizada y marcada como revisada.", "success")
         return redirect(url_for("jornadas"))
     with db() as con:
         editing = con.execute("SELECT * FROM jornadas WHERE id=?", (item_id,)).fetchone()
         rows = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
     if not editing:
         abort(404)
-    return render_template("jornadas.html", rows=rows, today=date.today().isoformat(),
+    editing = journey_for_display(editing)
+    rows = [journey_for_display(row) for row in rows]
+    return render_template("jornadas.html", rows=rows, today=canary_now().date().isoformat(),
         normal_default=get_setting("horas_normales_dia", "8"), editing=editing)
 
 
@@ -342,7 +402,7 @@ def viajes():
         return redirect(url_for("viajes"))
     with db() as con:
         rows = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC").fetchall()
-    return render_template("viajes.html", rows=rows, today=date.today().isoformat(), editing=None)
+    return render_template("viajes.html", rows=rows, today=canary_now().date().isoformat(), editing=None)
 
 
 @app.route("/viajes/<int:item_id>/editar", methods=["GET", "POST"])
@@ -370,7 +430,7 @@ def edit_viaje(item_id):
         rows = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC").fetchall()
     if not editing:
         abort(404)
-    return render_template("viajes.html", rows=rows, today=date.today().isoformat(), editing=editing)
+    return render_template("viajes.html", rows=rows, today=canary_now().date().isoformat(), editing=editing)
 
 
 @app.post("/viajes/<int:item_id>/toggle")
@@ -443,7 +503,7 @@ def pagos():
     with db() as con:
         rows, total_received = get_payment_history(con)
     return render_template("pagos.html", rows=rows, total_received=total_received,
-        today=date.today().isoformat(), editing=None)
+        today=canary_now().date().isoformat(), editing=None)
 
 
 @app.route("/pagos/<int:item_id>/editar", methods=["GET", "POST"])
@@ -473,7 +533,136 @@ def edit_pago(item_id):
     if not editing:
         abort(404)
     return render_template("pagos.html", rows=rows, total_received=total_received,
-        today=date.today().isoformat(), editing=editing)
+        today=canary_now().date().isoformat(), editing=editing)
+
+
+def month_bounds(month_key):
+    if not isinstance(month_key, str) or len(month_key) != 7 or month_key[4] != "-":
+        raise ValueError("Invalid month")
+    year = int(month_key[:4])
+    month = int(month_key[5:])
+    first = date(year, month, 1)
+    following = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return first.isoformat(), following.isoformat()
+
+
+def build_monthly_report(month_key):
+    first_day, next_month = month_bounds(month_key)
+    with db() as con:
+        jornada_rows = con.execute(
+            "SELECT * FROM jornadas WHERE fecha>=? AND fecha<? ORDER BY fecha,id",
+            (first_day, next_month),
+        ).fetchall()
+        trip_rows = con.execute(
+            "SELECT * FROM viajes WHERE fecha>=? AND fecha<? ORDER BY fecha,id",
+            (first_day, next_month),
+        ).fetchall()
+        payment_rows = con.execute(
+            "SELECT * FROM pagos WHERE fecha>=? AND fecha<? ORDER BY fecha,id",
+            (first_day, next_month),
+        ).fetchall()
+        paid_trip_receipts = con.execute(
+            """SELECT * FROM viajes WHERE pagado=1
+               AND COALESCE(NULLIF(fecha_pago,''),fecha)>=?
+               AND COALESCE(NULLIF(fecha_pago,''),fecha)<? ORDER BY COALESCE(NULLIF(fecha_pago,''),fecha),id""",
+            (first_day, next_month),
+        ).fetchall()
+
+    jornadas = [journey_for_display(row) for row in jornada_rows]
+    viajes = [dict(row) for row in trip_rows]
+    pagos = [dict(row) for row in payment_rows]
+    cobros = [
+        {"fecha": row["fecha"], "fecha_tipo": "Fecha del pago", "concepto": row["concepto"],
+         "importe": row["importe"], "origen": "Pago anotado", "notas": row["notas"]}
+        for row in pagos
+    ]
+    cobros.extend(
+        {"fecha": row["fecha_pago"] or row["fecha"],
+         "fecha_tipo": "Fecha del cobro" if row["fecha_pago"] else "Fecha del viaje (estimada)",
+         "concepto": row["concepto"], "importe": row["importe"], "origen": "Viaje pagado", "notas": row["notas"]}
+        for row in paid_trip_receipts
+    )
+    cobros.sort(key=lambda row: (row["fecha"], row["concepto"], row["origen"]), reverse=True)
+
+    horas_normales = sum(float(row["horas_normales"] or 0) for row in jornadas)
+    horas_extra = sum(float(row["horas_extra"] or 0) for row in jornadas)
+    provisional_count = sum(1 for row in jornadas if row["provisional"])
+    viajes_total = sum(float(row["importe"] or 0) for row in viajes)
+    viajes_pagados = sum(float(row["importe"] or 0) for row in viajes if row["pagado"])
+    viajes_pendientes = sum(float(row["importe"] or 0) for row in viajes if not row["pagado"])
+    total_recibido = sum(float(row["importe"] or 0) for row in cobros)
+
+    rate = get_setting("hora_extra_euros", "").strip()
+    try:
+        hourly_rate = float(rate.replace(",", ".")) if rate else None
+        if hourly_rate is not None and (not math.isfinite(hourly_rate) or hourly_rate < 0):
+            hourly_rate = None
+    except ValueError:
+        hourly_rate = None
+    importe_extra = horas_extra * hourly_rate if hourly_rate is not None else None
+
+    nombres_meses = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
+                     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+    year, month = int(month_key[:4]), int(month_key[5:])
+    return {
+        "mes": month_key,
+        "mes_label": f"{nombres_meses[month - 1].capitalize()} {year}",
+        "jornadas": jornadas,
+        "viajes": viajes,
+        "cobros": cobros,
+        "dias_registrados": len(jornadas),
+        "horas_normales": horas_normales,
+        "horas_extra": horas_extra,
+        "provisional_count": provisional_count,
+        "viajes_total": viajes_total,
+        "viajes_pagados": viajes_pagados,
+        "viajes_pendientes": viajes_pendientes,
+        "total_recibido": total_recibido,
+        "importe_extra": importe_extra,
+        "hourly_rate": hourly_rate,
+    }
+
+
+@app.route("/informes")
+@login_required
+def informes():
+    mes = request.args.get("mes") or canary_now().date().strftime("%Y-%m")
+    try:
+        report = build_monthly_report(mes)
+    except (ValueError, TypeError):
+        flash("Elige un mes válido para generar el informe.", "danger")
+        return redirect(url_for("informes"))
+
+    if request.args.get("descargar") == "csv":
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, delimiter=";")
+        headers = ["Tipo", "Fecha", "Concepto", "Horas normales", "Horas extra",
+                   "Importe de viajes (€)", "Importe cobrado (€)", "Estado", "Notas"]
+        writer.writerow(headers)
+        writer.writerow(["Resumen", mes, "Registros de jornada", report["dias_registrados"], "", "", "", "", ""])
+        writer.writerow(["Resumen", mes, "Horas normales", report["horas_normales"], "", "", "", "", ""])
+        writer.writerow(["Resumen", mes, "Horas extra", "", report["horas_extra"], "", "", "", ""])
+        if report["importe_extra"] is not None:
+            writer.writerow(["Resumen", mes, "Importe extra estimado", "", "", "", report["importe_extra"], "", ""])
+        writer.writerow(["Resumen", mes, "Viajes del mes", "", "", report["viajes_total"], "", "", ""])
+        writer.writerow(["Resumen", mes, "Viajes pendientes", "", "", report["viajes_pendientes"], "", "", ""])
+        writer.writerow(["Resumen", mes, "Total recibido", "", "", "", report["total_recibido"], "", ""])
+        for row in report["jornadas"]:
+            estado = "Provisional · revisar" if row["provisional"] else "Revisado"
+            writer.writerow(["Jornada", row["fecha"], f'{row["entrada"] or ""}-{row["salida"] or ""}',
+                             row["horas_normales"], row["horas_extra"], "", "", estado, row["notas"]])
+        for row in report["viajes"]:
+            estado = "Pagado" if row["pagado"] else "Pendiente"
+            writer.writerow(["Viaje", row["fecha"], row["concepto"], "", "", row["importe"], "", estado, row["notas"]])
+        for row in report["cobros"]:
+            writer.writerow([row["origen"], row["fecha"], row["concepto"], "", "", "",
+                             row["importe"], row["fecha_tipo"], row["notas"]])
+        data = io.BytesIO(output.getvalue().encode("utf-8-sig"))
+        data.seek(0)
+        return send_file(data, mimetype="text/csv; charset=utf-8",
+                         as_attachment=True, download_name=f"informe-{mes}.csv")
+
+    return render_template("informes.html", **report)
 
 
 @app.route("/ajustes", methods=["GET", "POST"])
@@ -603,6 +792,13 @@ def exportar():
         if table == "pagos":
             rows, _ = get_payment_history(con)
             rows = [{key: row[key] for key in ("fecha", "fecha_tipo", "concepto", "categoria", "importe", "origen", "notas")} for row in rows]
+        elif table == "jornadas":
+            records = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
+            rows = []
+            for record in records:
+                item = journey_for_display(record)
+                item["estado"] = "Provisional · revisar" if item["provisional"] else "Revisado"
+                rows.append({key: item[key] for key in ("id", "fecha", "entrada", "salida", "horas_normales", "horas_extra", "estado", "notas", "creado")})
         else:
             rows = con.execute(f"SELECT * FROM {table}").fetchall()
     output = io.StringIO()
