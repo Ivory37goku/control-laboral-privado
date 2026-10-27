@@ -6,11 +6,18 @@ QUÉ ES
 - Dashboard con gráfico de horas extra, resumen de dinero y accesos rápidos.
 - Registros de horas extra, viajes, pagos recibidos y copias de seguridad.
 - Edición de jornadas, viajes y pagos ya guardados.
+- Fichaje 08:00–16:00 provisional al abrir la app después de las 16:00 en días laborables, si aún no hay registro.
+- Estados revisado/provisional y resúmenes mensuales imprimibles o descargables en CSV.
 - Exportación CSV para abrir con Excel.
 - Asistente local gratuito que resume horas, viajes y pagos sin enviar datos fuera de la aplicación.
 - Protección CSRF en formularios y validación de integridad de las copias descargables.
 - Restauración de copias con validación y copia de seguridad previa automática.
 - Contraseña de acceso mediante variable de entorno.
+
+FICHAJE AUTOMÁTICO E INFORMES
+- La app solo crea el fichaje automático cuando se abre después de las 16:00, de lunes a viernes, y no existe ya un registro para ese día.
+- El fichaje automático queda provisional y se puede editar en Horas; la app no genera por sí sola una notificación a esa hora.
+- En Informes elige un mes para ver jornadas, horas, viajes y cobros. Puedes descargar un CSV o imprimir/guardar la página como PDF.
 
 DATOS PRECARGADOS
 Se precargan una sola vez:
