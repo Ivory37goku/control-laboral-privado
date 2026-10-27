@@ -51,7 +51,7 @@ def protect_state_changes():
 
 @app.before_request
 def record_usual_shift_after_work():
-    if session.get("logged_in") and request.method == "GET" and request.endpoint not in {"static", "service_worker"}:
+    if session.get("logged_in") and request.method == "GET" and request.endpoint != "static":
         record_scheduled_shift(db)
 
 
@@ -297,13 +297,6 @@ def date_es(value):
         return value
 
 
-@app.get("/service-worker.js")
-def service_worker():
-    response = send_file(os.path.join(APP_DIR, "static", "service-worker.js"),
-                         mimetype="application/javascript")
-    response.headers["Service-Worker-Allowed"] = "/"
-    response.headers["Cache-Control"] = "no-cache"
-    return response
 
 
 @app.route("/login", methods=["GET", "POST"])
