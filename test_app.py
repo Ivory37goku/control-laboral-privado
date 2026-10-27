@@ -264,7 +264,7 @@ class ControlLaboralTests(unittest.TestCase):
         self.login()
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn("inset:0;width:100vw", page)
-        self.assertIn("background-position:center center;background-size:cover", page)
+        self.assertIn("center center/cover no-repeat", page)
 
     def test_goku_artwork_is_served_as_static_background_asset(self):
         response = self.client.get("/static/goku-bg.svg")
