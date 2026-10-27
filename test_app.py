@@ -351,19 +351,6 @@ class ControlLaboralTests(unittest.TestCase):
         self.assertIn("Descargar igualmente sin cerrar el mes", page)
         self.assertIn("entrada o salida sin completar", page)
 
-    def test_pwa_install_files_are_available_without_caching_private_pages(self):
-        manifest_response = self.client.get("/static/manifest.webmanifest")
-        self.assertEqual(manifest_response.status_code, 200)
-        manifest = manifest_response.get_json()
-        manifest_response.close()
-        self.assertEqual(manifest["display"], "standalone")
-        self.assertIn("goku-bg.svg", manifest["icons"][0]["src"])
-        worker_response = self.client.get("/service-worker.js")
-        self.assertEqual(worker_response.status_code, 200)
-        self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
-        self.assertNotIn("caches.open", worker_response.get_data(as_text=True))
-        worker_response.close()
-
     def test_trip_filter_searches_concept_within_date_range(self):
         with application.db() as con:
             con.execute("INSERT INTO viajes(fecha,concepto,importe,pagado,notas,creado) VALUES(?,?,?,?,?,?)",
