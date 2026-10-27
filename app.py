@@ -7,7 +7,7 @@ import math
 import secrets
 import tempfile
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
@@ -51,7 +51,7 @@ def protect_state_changes():
 
 @app.before_request
 def record_usual_shift_after_work():
-    if session.get("logged_in") and request.method == "GET" and request.endpoint != "static":
+    if session.get("logged_in") and request.method == "GET" and request.endpoint not in {"static", "service_worker"}:
         record_scheduled_shift(db)
 
 
@@ -198,6 +198,45 @@ def parse_form_date(value):
     return date.fromisoformat(value)
 
 
+def optional_date_filter(name, label):
+    value = request.args.get(name, "").strip()
+    if not value:
+        return ""
+    try:
+        parse_form_date(value)
+        return value
+    except (ValueError, TypeError):
+        flash(f"El filtro de {label} no es una fecha válida.", "warning")
+        return ""
+
+
+def date_range_from_request():
+    start = optional_date_filter("desde", "inicio")
+    end = optional_date_filter("hasta", "fin")
+    if start and end and start > end:
+        flash("La fecha de inicio debe ser anterior o igual a la fecha final.", "warning")
+        return "", ""
+    return start, end
+
+
+def duplicate_journey_exists(con, fecha, exclude_id=None):
+    if exclude_id is None:
+        return con.execute("SELECT id FROM jornadas WHERE fecha=? LIMIT 1", (fecha,)).fetchone()
+    return con.execute("SELECT id FROM jornadas WHERE fecha=? AND id<>? LIMIT 1",
+                       (fecha, exclude_id)).fetchone()
+
+
+def duplicate_payment_exists(con, fecha, concepto, importe, categoria, exclude_id=None):
+    query = """SELECT id FROM pagos
+               WHERE fecha=? AND LOWER(TRIM(concepto))=LOWER(TRIM(?))
+               AND ABS(importe-?)<0.005 AND categoria=?"""
+    params = [fecha, concepto, importe, categoria]
+    if exclude_id is not None:
+        query += " AND id<>?"
+        params.append(exclude_id)
+    return con.execute(query + " LIMIT 1", tuple(params)).fetchone()
+
+
 PROVISIONAL_JOURNEY_MARKER = "[SIN REVISAR]"
 REVIEWED_JOURNEY_MARKER = "[REVISADO]"
 try:
@@ -258,6 +297,15 @@ def date_es(value):
         return value
 
 
+@app.get("/service-worker.js")
+def service_worker():
+    response = send_file(os.path.join(APP_DIR, "static", "service-worker.js"),
+                         mimetype="application/javascript")
+    response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -297,6 +345,7 @@ def dashboard():
         recent = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC LIMIT 6").fetchall()
         payment_summary = con.execute("""SELECT
             (SELECT COALESCE(SUM(importe),0) FROM pagos) pagos_anotados,
+            (SELECT COALESCE(SUM(importe),0) FROM pagos WHERE categoria='horas_extra') horas_extra_cobradas,
             (SELECT COALESCE(SUM(importe),0) FROM viajes WHERE pagado=1) viajes_cobrados
         """).fetchone()
         today_date = canary_now().date().isoformat()
@@ -307,17 +356,34 @@ def dashboard():
         rate_num = float(rate.replace(",", ".")) if rate else None
     except ValueError:
         rate_num = None
-    overtime_due = total_h * rate_num if rate_num is not None else None
+    overtime_estimated = total_h * rate_num if rate_num is not None else None
+    overtime_paid = float(payment_summary["horas_extra_cobradas"] or 0)
+    overtime_due = max(0, overtime_estimated - overtime_paid) if overtime_estimated is not None else None
     recent = [journey_for_display(row) for row in recent]
     today_entry = journey_for_display(today_row) if today_row else None
     payments_registered = payment_summary["pagos_anotados"]
     trips_paid = payment_summary["viajes_cobrados"]
     payments = payments_registered + trips_paid
+    current_month_date = canary_now().date().replace(day=1)
+    previous_month_date = current_month_date - timedelta(days=1)
+    current_report = build_monthly_report(current_month_date.strftime("%Y-%m"))
+    previous_report = build_monthly_report(previous_month_date.strftime("%Y-%m"))
+    month_comparison = {
+        "current_label": current_report["mes_label"],
+        "previous_label": previous_report["mes_label"],
+        "current_hours": current_report["horas_extra"],
+        "previous_hours": previous_report["horas_extra"],
+        "current_received": current_report["total_recibido"],
+        "previous_received": previous_report["total_recibido"],
+        "hours_delta": current_report["horas_extra"] - previous_report["horas_extra"],
+        "received_delta": current_report["total_recibido"] - previous_report["total_recibido"],
+    }
     return render_template("dashboard.html", total_h=total_h, trips_due=trips_due, trips_count=trips_count,
         months=[dict(x) for x in months], trips=trips, recent=recent, payments=payments,
         payments_registered=payments_registered, trips_paid=trips_paid, today_date=today_date,
         today_entry=today_entry, rate=rate_num, overtime_due=overtime_due,
-        work_schedule=get_setting("horario_habitual"))
+        overtime_estimated=overtime_estimated, overtime_paid=overtime_paid,
+        month_comparison=month_comparison, work_schedule=get_setting("horario_habitual"))
 
 
 @app.route("/jornadas", methods=["GET", "POST"])
@@ -325,6 +391,8 @@ def dashboard():
 def jornadas():
     if request.method == "POST":
         fecha = request.form.get("fecha", "")
+        entrada = request.form.get("entrada", "").strip()
+        salida = request.form.get("salida", "").strip()
         try:
             parse_form_date(fecha)
             normales = parse_nonnegative_number(request.form.get("horas_normales"), 0)
@@ -335,17 +403,41 @@ def jornadas():
         provisional = request.form.get("provisional") == "1"
         notes = store_journey_notes(request.form.get("notas", "").strip(), provisional)
         with db() as con:
+            duplicate = duplicate_journey_exists(con, fecha)
+            if duplicate:
+                flash("Ya existe un fichaje para ese día. Puedes abrirlo para corregirlo en lugar de crear otro.", "warning")
+                return redirect(url_for("jornadas", duplicado=duplicate["id"]))
             con.execute("""INSERT INTO jornadas(fecha,entrada,salida,horas_normales,horas_extra,notas,creado)
                 VALUES(?,?,?,?,?,?,?)""",
-                (fecha, request.form.get("entrada","").strip(), request.form.get("salida","").strip(),
-                 normales, extra, notes, datetime.now().isoformat()))
-        flash("Jornada guardada como provisional." if provisional else "Jornada guardada y marcada como revisada.", "success")
+                (fecha, entrada, salida, normales, extra, notes, datetime.now().isoformat()))
+        missing = [label for label, value in (("entrada", entrada), ("salida", salida)) if not value]
+        if missing:
+            flash("Jornada guardada, pero falta " + " y ".join(missing) + ". Completa ese dato para cerrar el mes.", "warning")
+        else:
+            flash("Jornada guardada como provisional." if provisional else "Jornada guardada y marcada como revisada.", "success")
         return redirect(url_for("jornadas"))
     with db() as con:
-        rows = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
-    rows = [journey_for_display(row) for row in rows]
+        raw_rows = con.execute("SELECT * FROM jornadas ORDER BY fecha DESC,id DESC").fetchall()
+    all_rows = [journey_for_display(row) for row in raw_rows]
+    pending_data_count = sum(1 for row in all_rows if row["provisional"] or not row.get("entrada") or not row.get("salida"))
+    start, end = date_range_from_request()
+    status = request.args.get("estado", "todos")
+    if status not in {"todos", "provisional", "revisado"}:
+        status = "todos"
+    search = request.args.get("buscar", "").strip().casefold()
+    rows = [row for row in all_rows
+            if (not start or row["fecha"] >= start)
+            and (not end or row["fecha"] <= end)
+            and (status == "todos" or (status == "provisional" and row["provisional"])
+                 or (status == "revisado" and not row["provisional"]))
+            and (not search or search in " ".join(str(row.get(key) or "") for key in
+                ("fecha", "entrada", "salida", "notas")).casefold())]
+    duplicate_id = request.args.get("duplicado", type=int)
+    duplicate_item = next((row for row in all_rows if row["id"] == duplicate_id), None) if duplicate_id else None
     return render_template("jornadas.html", rows=rows, today=canary_now().date().isoformat(),
-        normal_default=get_setting("horas_normales_dia", "8"), editing=None)
+        normal_default=get_setting("horas_normales_dia", "8"), editing=None,
+        pending_data_count=pending_data_count, filtered_count=len(rows), duplicate_item=duplicate_item,
+        filters={"desde": start, "hasta": end, "estado": status, "buscar": request.args.get("buscar", "")})
 
 
 @app.route("/jornadas/<int:item_id>/editar", methods=["GET", "POST"])
@@ -360,13 +452,21 @@ def edit_jornada(item_id):
         except (ValueError, TypeError):
             flash("Revisa la fecha y las horas introducidas.", "danger")
             return redirect(url_for("edit_jornada", item_id=item_id))
+        entrada = request.form.get("entrada", "").strip()
+        salida = request.form.get("salida", "").strip()
         provisional = request.form.get("provisional") == "1"
         notes = store_journey_notes(request.form.get("notas", "").strip(), provisional)
         with db() as con:
+            if duplicate_journey_exists(con, fecha, exclude_id=item_id):
+                flash("Ya hay otro fichaje para ese día. Elige otra fecha para evitar duplicados.", "warning")
+                return redirect(url_for("edit_jornada", item_id=item_id))
             con.execute("""UPDATE jornadas SET fecha=?,entrada=?,salida=?,horas_normales=?,horas_extra=?,notas=?
-                WHERE id=?""", (fecha, request.form.get("entrada", "").strip(),
-                request.form.get("salida", "").strip(), normales, extra, notes, item_id))
-        flash("Jornada actualizada; queda pendiente de revisión." if provisional else "Jornada actualizada y marcada como revisada.", "success")
+                WHERE id=?""", (fecha, entrada, salida, normales, extra, notes, item_id))
+        missing = [label for label, value in (("entrada", entrada), ("salida", salida)) if not value]
+        if missing:
+            flash("Jornada actualizada, pero falta " + " y ".join(missing) + ". Completa ese dato para cerrar el mes.", "warning")
+        else:
+            flash("Jornada actualizada; queda pendiente de revisión." if provisional else "Jornada actualizada y marcada como revisada.", "success")
         return redirect(url_for("jornadas"))
     with db() as con:
         editing = con.execute("SELECT * FROM jornadas WHERE id=?", (item_id,)).fetchone()
@@ -410,8 +510,21 @@ def viajes():
         flash("Viaje añadido como pendiente de pago.", "success")
         return redirect(url_for("viajes"))
     with db() as con:
-        rows = con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC").fetchall()
-    return render_template("viajes.html", rows=rows, today=canary_now().date().isoformat(), editing=None)
+        raw_rows = [dict(row) for row in con.execute("SELECT * FROM viajes ORDER BY fecha DESC,id DESC").fetchall()]
+    start, end = date_range_from_request()
+    status = request.args.get("estado", "todos")
+    if status not in {"todos", "pagado", "pendiente"}:
+        status = "todos"
+    search = request.args.get("buscar", "").strip().casefold()
+    rows = [row for row in raw_rows
+            if (not start or row["fecha"] >= start)
+            and (not end or row["fecha"] <= end)
+            and (status == "todos" or (status == "pagado" and row["pagado"])
+                 or (status == "pendiente" and not row["pagado"]))
+            and (not search or search in " ".join(str(row.get(key) or "") for key in
+                ("concepto", "notas")).casefold())]
+    return render_template("viajes.html", rows=rows, today=canary_now().date().isoformat(), editing=None,
+        filters={"desde": start, "hasta": end, "estado": status, "buscar": request.args.get("buscar", "")})
 
 
 @app.route("/viajes/<int:item_id>/editar", methods=["GET", "POST"])
@@ -499,20 +612,43 @@ def pagos():
         except (ValueError, TypeError):
             flash("Revisa la fecha y el importe.", "danger")
             return redirect(url_for("pagos"))
+        notas = request.form.get("notas", "").strip()
         if not concepto or categoria not in {"horas_extra", "viaje", "otro"}:
             flash("Revisa el concepto y la categoría del pago.", "danger")
             return redirect(url_for("pagos"))
         with db() as con:
+            duplicate = duplicate_payment_exists(con, fecha, concepto, importe, categoria)
+            if duplicate and request.form.get("confirmar_duplicado") != "1":
+                session["pending_duplicate_payment"] = {
+                    "fecha": fecha, "concepto": concepto, "importe": request.form.get("importe", ""),
+                    "categoria": categoria, "notas": notas,
+                }
+                flash("Ya existe un pago con la misma fecha, concepto e importe. Revisa el formulario antes de guardarlo otra vez.", "warning")
+                return redirect(url_for("pagos", confirmar_duplicado="1"))
             con.execute("""INSERT INTO pagos(fecha,concepto,importe,categoria,notas,creado)
-                VALUES(?,?,?,?,?,?)""", (fecha, concepto,
-                importe, categoria, request.form.get("notas","").strip(),
-                datetime.now().isoformat()))
+                VALUES(?,?,?,?,?,?)""", (fecha, concepto, importe, categoria, notas, datetime.now().isoformat()))
+        session.pop("pending_duplicate_payment", None)
         flash("Pago registrado en el histórico.", "success")
         return redirect(url_for("pagos"))
     with db() as con:
-        rows, total_received = get_payment_history(con)
+        all_rows, total_received = get_payment_history(con)
+    duplicate_form = session.get("pending_duplicate_payment") if request.args.get("confirmar_duplicado") == "1" else None
+    if not duplicate_form:
+        session.pop("pending_duplicate_payment", None)
+    start, end = date_range_from_request()
+    category = request.args.get("categoria", "todas")
+    if category not in {"todas", "Horas extra", "Viaje", "Otro"}:
+        category = "todas"
+    search = request.args.get("buscar", "").strip().casefold()
+    rows = [row for row in all_rows
+            if (not start or row["fecha"] >= start)
+            and (not end or row["fecha"] <= end)
+            and (category == "todas" or row["categoria"] == category)
+            and (not search or search in " ".join(str(row.get(key) or "") for key in
+                ("concepto", "categoria", "origen", "notas")).casefold())]
     return render_template("pagos.html", rows=rows, total_received=total_received,
-        today=canary_now().date().isoformat(), editing=None)
+        today=canary_now().date().isoformat(), editing=None, duplicate_form=duplicate_form,
+        filters={"desde": start, "hasta": end, "categoria": category, "buscar": request.args.get("buscar", "")})
 
 
 @app.route("/pagos/<int:item_id>/editar", methods=["GET", "POST"])
@@ -532,6 +668,9 @@ def edit_pago(item_id):
             flash("Revisa el concepto y la categoría del pago.", "danger")
             return redirect(url_for("edit_pago", item_id=item_id))
         with db() as con:
+            if duplicate_payment_exists(con, fecha, concepto, importe, categoria, exclude_id=item_id):
+                flash("Ya hay otro pago con esa fecha, concepto e importe. Comprueba los datos antes de guardarlo.", "warning")
+                return redirect(url_for("edit_pago", item_id=item_id))
             con.execute("UPDATE pagos SET fecha=?,concepto=?,importe=?,categoria=?,notas=? WHERE id=?",
                 (fecha, concepto, importe, categoria, request.form.get("notas", "").strip(), item_id))
         flash("Pago actualizado.", "success")
@@ -596,6 +735,7 @@ def build_monthly_report(month_key):
     horas_normales = sum(float(row["horas_normales"] or 0) for row in jornadas)
     horas_extra = sum(float(row["horas_extra"] or 0) for row in jornadas)
     provisional_count = sum(1 for row in jornadas if row["provisional"])
+    incomplete_count = sum(1 for row in jornadas if not row.get("entrada") or not row.get("salida"))
     viajes_total = sum(float(row["importe"] or 0) for row in viajes)
     viajes_pagados = sum(float(row["importe"] or 0) for row in viajes if row["pagado"])
     viajes_pendientes = sum(float(row["importe"] or 0) for row in viajes if not row["pagado"])
@@ -623,6 +763,7 @@ def build_monthly_report(month_key):
         "horas_normales": horas_normales,
         "horas_extra": horas_extra,
         "provisional_count": provisional_count,
+        "incomplete_count": incomplete_count,
         "viajes_total": viajes_total,
         "viajes_pagados": viajes_pagados,
         "viajes_pendientes": viajes_pendientes,
@@ -630,6 +771,90 @@ def build_monthly_report(month_key):
         "importe_extra": importe_extra,
         "hourly_rate": hourly_rate,
     }
+
+
+def build_annual_report(year_value):
+    if not isinstance(year_value, str) or len(year_value) != 4:
+        raise ValueError("Invalid year")
+    year = int(year_value)
+    if year < 2000 or year > 2100:
+        raise ValueError("Invalid year")
+    first_day = date(year, 1, 1).isoformat()
+    next_year = date(year + 1, 1, 1).isoformat()
+    with db() as con:
+        jornadas = con.execute(
+            "SELECT * FROM jornadas WHERE fecha>=? AND fecha<? ORDER BY fecha,id",
+            (first_day, next_year),
+        ).fetchall()
+        viajes = con.execute(
+            "SELECT * FROM viajes WHERE fecha>=? AND fecha<? ORDER BY fecha,id",
+            (first_day, next_year),
+        ).fetchall()
+        pagos = con.execute(
+            "SELECT * FROM pagos WHERE fecha>=? AND fecha<? ORDER BY fecha,id",
+            (first_day, next_year),
+        ).fetchall()
+        viajes_cobrados = con.execute(
+            """SELECT * FROM viajes WHERE pagado=1
+               AND COALESCE(NULLIF(fecha_pago,''),fecha)>=?
+               AND COALESCE(NULLIF(fecha_pago,''),fecha)<?""",
+            (first_day, next_year),
+        ).fetchall()
+
+    jornada_rows = [journey_for_display(row) for row in jornadas]
+    extra_hours = sum(float(row["horas_extra"] or 0) for row in jornada_rows)
+    normal_hours = sum(float(row["horas_normales"] or 0) for row in jornada_rows)
+    provisional_count = sum(1 for row in jornada_rows if row["provisional"])
+    incomplete_count = sum(1 for row in jornada_rows if not row.get("entrada") or not row.get("salida"))
+    pending_review_count = sum(1 for row in jornada_rows
+                               if row["provisional"] or not row.get("entrada") or not row.get("salida"))
+    trips_due = sum(float(row["importe"] or 0) for row in viajes if not row["pagado"])
+    trips_paid_total = sum(float(row["importe"] or 0) for row in viajes if row["pagado"])
+    payments_received = sum(float(row["importe"] or 0) for row in pagos)
+    trip_receipts = sum(float(row["importe"] or 0) for row in viajes_cobrados)
+    payments_for_hours = sum(float(row["importe"] or 0) for row in pagos if row["categoria"] == "horas_extra")
+
+    rate = get_setting("hora_extra_euros", "").strip()
+    try:
+        hourly_rate = float(rate.replace(",", ".")) if rate else None
+        if hourly_rate is not None and (not math.isfinite(hourly_rate) or hourly_rate < 0):
+            hourly_rate = None
+    except ValueError:
+        hourly_rate = None
+    overtime_estimated = extra_hours * hourly_rate if hourly_rate is not None else None
+    overtime_due = max(0, overtime_estimated - payments_for_hours) if overtime_estimated is not None else None
+
+    return {
+        "year": year,
+        "first_day": first_day,
+        "days_registered": len(jornada_rows),
+        "normal_hours": normal_hours,
+        "extra_hours": extra_hours,
+        "provisional_count": provisional_count,
+        "incomplete_count": incomplete_count,
+        "pending_review_count": pending_review_count,
+        "trips_due": trips_due,
+        "trips_paid": trips_paid_total,
+        "received_total": payments_received + trip_receipts,
+        "received_payments": payments_received,
+        "received_trips": trip_receipts,
+        "overtime_estimated": overtime_estimated,
+        "overtime_paid": payments_for_hours,
+        "overtime_due": overtime_due,
+        "hourly_rate": hourly_rate,
+    }
+
+
+@app.route("/informes/anual")
+@login_required
+def informe_anual():
+    year_value = request.args.get("anio") or str(canary_now().date().year)
+    try:
+        report = build_annual_report(year_value)
+    except (ValueError, TypeError):
+        flash("Elige un año válido para generar el resumen.", "danger")
+        return redirect(url_for("informe_anual"))
+    return render_template("informe_anual.html", **report)
 
 
 @app.route("/informes")

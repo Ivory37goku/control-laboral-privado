@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Mi Control Laboral",
+  "short_name": "Control Laboral",
+  "description": "Registro personal de jornadas, viajes y pagos.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#14251f",
+  "background_color": "#f4f7f5",
+  "icons": [
+    {
+      "src": "/static/goku-bg.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
